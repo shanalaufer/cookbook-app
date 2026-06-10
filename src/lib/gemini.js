@@ -121,14 +121,21 @@ export async function extractRecipeFromPdf(base64Data, dietaryRestrictions) {
 }
 
 export async function categorizeIngredients(ingredients) {
-  const model = getModel()
+  const model = getModel(
+    `You are a grocery categorization expert. Assign every ingredient to exactly one of these categories:
+- Produce: all fresh or raw vegetables, fruits, herbs, and leafy greens (e.g. cabbage, onion, garlic, carrots, celery, lettuce, spinach, kale, tomatoes, potatoes, apples, lemon, lime, parsley, cilantro, basil, ginger, avocado, mushrooms, bell peppers, zucchini, eggplant, corn, beets, radishes, cucumber, broccoli, cauliflower)
+- Meat: beef, chicken, pork, lamb, turkey, fish, shrimp, seafood, bacon, sausage, deli meats, eggs
+- Dairy: milk, butter, cream, cheese, yogurt, sour cream, cream cheese, half-and-half, heavy cream, ice cream
+- Bakery: bread, rolls, tortillas, pita, buns, bagels, pastries, cake, crackers
+- Pantry: canned goods, oils, vinegar, soy sauce, flour, sugar, rice, pasta, beans, lentils, nuts, seeds, dried spices, seasonings, condiments, broth, stock, honey, maple syrup, chocolate chips, cocoa powder, baking powder, baking soda, salt, pepper, hot sauce, tomato paste, canned tomatoes, coconut milk
+- Frozen: frozen vegetables, frozen meals, ice cream, frozen fruit, frozen meat if specified as frozen
+- Other: non-food items, cleaning supplies, or anything that truly does not fit above`
+  )
   const result = await model.generateContent(
-    `Categorize these grocery ingredients. Return raw JSON only mapping each ingredient to its category.
-Categories: Produce, Meat, Dairy, Bakery, Pantry, Frozen, Other
+    `Categorize every ingredient below. Return ONLY a raw JSON object — no explanation, no markdown:
+{"ingredient name": "Category"}
 
-Ingredients: ${JSON.stringify(ingredients)}
-
-Return: {"ingredient name": "Category"}`
+Ingredients: ${JSON.stringify(ingredients)}`
   )
   try {
     return parseJSON(result.response.text())

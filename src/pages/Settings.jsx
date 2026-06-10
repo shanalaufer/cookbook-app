@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
 
@@ -8,14 +8,23 @@ export default function Settings() {
   const [restrictions, setRestrictions] = useState(preferences.dietary_restrictions ?? '')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  // Sync textarea when preferences finish loading from Supabase
+  useEffect(() => {
+    setRestrictions(preferences.dietary_restrictions ?? '')
+  }, [preferences.dietary_restrictions])
 
   async function handleSave() {
     setSaving(true)
     setSaved(false)
+    setSaveError('')
     try {
       await updatePreferences({ dietary_restrictions: restrictions })
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (e) {
+      setSaveError(e.message || 'Failed to save. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -55,7 +64,8 @@ export default function Settings() {
           placeholder="e.g. kosher — no pork, no shellfish, no mixing meat and dairy"
           rows={4}
         />
-        {saved && <div className="success-banner" style={{ marginTop: 8 }}>✓ Saved</div>}
+        {saved     && <div className="success-banner" style={{ marginTop: 8 }}>✓ Saved</div>}
+        {saveError && <div className="error-banner"   style={{ marginTop: 8 }}>{saveError}</div>}
         <button
           className="btn-primary"
           onClick={handleSave}

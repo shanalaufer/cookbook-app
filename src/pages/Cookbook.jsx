@@ -35,6 +35,43 @@ export default function Cookbook() {
     load()
   }
 
+  async function handlePhotoUpload(recipe, file) {
+    const ext = file.name.split('.').pop() || 'jpg'
+    const path = `${user.id}/${recipe.id}-${Date.now()}.${ext}`
+    const { error: uploadError } = await supabase.storage
+      .from('recipe-photos')
+      .upload(path, file, { upsert: true })
+    if (uploadError) { alert('Photo upload failed: ' + uploadError.message); return }
+    const { data: { publicUrl } } = supabase.storage.from('recipe-photos').getPublicUrl(path)
+    const { error: dbError } = await supabase
+      .from('recipes')
+      .update({ source_image: publicUrl })
+      .eq('id', recipe.id)
+    if (dbError) { alert('Failed to save photo: ' + dbError.message); return }
+    const updated = { ...recipe, source_image: publicUrl }
+    setSelected(updated)
+    setRecipes(prev => prev.map(r => r.id === recipe.id ? updated : r))
+  }
+
+  async function handlePhotoDelete(recipe) {
+    if (!confirm('Remove this photo?')) return
+    // Extract the storage path from the public URL (everything after /recipe-photos/)
+    const url = recipe.source_image
+    const marker = '/recipe-photos/'
+    const storagePath = url.includes(marker) ? url.split(marker)[1].split('?')[0] : null
+    if (storagePath) {
+      await supabase.storage.from('recipe-photos').remove([storagePath])
+    }
+    const { error } = await supabase
+      .from('recipes')
+      .update({ source_image: null })
+      .eq('id', recipe.id)
+    if (error) { alert('Failed to remove photo: ' + error.message); return }
+    const updated = { ...recipe, source_image: null }
+    setSelected(updated)
+    setRecipes(prev => prev.map(r => r.id === recipe.id ? updated : r))
+  }
+
   const filtered = recipes.filter(r =>
     r.title.toLowerCase().includes(search.toLowerCase())
   )
@@ -85,6 +122,8 @@ export default function Cookbook() {
           onClose={() => setSelected(null)}
           onEdit={() => setEditing(selected)}
           onDelete={() => handleDelete(selected)}
+          onPhotoChange={file => handlePhotoUpload(selected, file)}
+          onPhotoDelete={selected.source_image ? () => handlePhotoDelete(selected) : undefined}
           showDeleteButton
         />
       )}

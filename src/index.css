@@ -598,3 +598,37 @@ select.input-field { cursor: pointer; }
   font-family: inherit;
 }
 .manual-category-select:focus { border-color: var(--primary); }
+
+/* ─── Recipe photo header (full view) ───────────────── */
+.recipe-photo-header {
+  position: relative;
+  margin: -20px -20px 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  overflow: hidden;
+}
+.recipe-photo-img {
+  width: 100%; max-height: 220px; object-fit: cover; display: block;
+}
+.recipe-photo-actions {
+  position: absolute; bottom: 10px; right: 10px;
+  display: flex; gap: 6px;
+}
+.recipe-photo-change-btn,
+.recipe-photo-delete-btn {
+  background: rgba(0,0,0,.55); color: #fff;
+  border: none; border-radius: 20px;
+  padding: 6px 12px; font-size: 12px; font-weight: 500;
+  cursor: pointer; backdrop-filter: blur(4px);
+}
+.recipe-photo-change-btn:hover { background: rgba(0,0,0,.72); }
+.recipe-photo-delete-btn:hover { background: rgba(160,30,30,.75); }
+
+/* ─── Success / error banners ────────────────────────── */
+.success-banner {
+  padding: 8px 12px; border-radius: var(--radius);
+  background: #D1FAE5; color: #065F46; font-size: 13px; font-weight: 500;
+}
+.error-banner {
+  padding: 8px 12px; border-radius: var(--radius);
+  background: #FEE2E2; color: #991B1B; font-size: 13px; font-weight: 500;
+}

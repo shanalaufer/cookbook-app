@@ -59,7 +59,10 @@ export function AuthProvider({ children }) {
   async function updatePreferences(updates) {
     const { data, error } = await supabase
       .from('user_preferences')
-      .upsert({ user_id: user.id, ...updates, updated_at: new Date().toISOString() })
+      .upsert(
+        { user_id: user.id, ...updates, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      )
       .select()
       .single()
     if (error) throw error

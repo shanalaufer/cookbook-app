@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import IngredientChecklist from './IngredientChecklist'
 
 export default function RecipeFullView({
@@ -7,10 +7,15 @@ export default function RecipeFullView({
   onSave,
   onDelete,
   onEdit,
+  onPhotoChange,
+  onPhotoDelete,
   showSaveButton = false,
   showDeleteButton = false,
 }) {
   const [showChecklist, setShowChecklist] = useState(false)
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const [photoDeleting, setPhotoDeleting] = useState(false)
+  const fileInputRef = useRef(null)
 
   if (showChecklist) {
     return (
@@ -29,12 +34,84 @@ export default function RecipeFullView({
     .map(s => s.trim())
     .filter(Boolean)
 
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0]
+    if (!file || !onPhotoChange) return
+    setPhotoUploading(true)
+    try {
+      await onPhotoChange(file)
+    } finally {
+      setPhotoUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  async function handlePhotoDelete() {
+    if (!onPhotoDelete) return
+    setPhotoDeleting(true)
+    try {
+      await onPhotoDelete()
+    } finally {
+      setPhotoDeleting(false)
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
 
+        {/* Recipe photo */}
+        {recipe.source_image && (
+          <div className="recipe-photo-header">
+            <img src={recipe.source_image} alt={recipe.title} className="recipe-photo-img" />
+            <div className="recipe-photo-actions">
+              {onPhotoChange && (
+                <button
+                  className="recipe-photo-change-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={photoUploading || photoDeleting}
+                >
+                  {photoUploading ? '…' : '📷 Change'}
+                </button>
+              )}
+              {onPhotoDelete && (
+                <button
+                  className="recipe-photo-delete-btn"
+                  onClick={handlePhotoDelete}
+                  disabled={photoUploading || photoDeleting}
+                >
+                  {photoDeleting ? '…' : '🗑 Remove'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="recipe-full">
+          {/* Add photo button when no photo exists */}
+          {!recipe.source_image && onPhotoChange && (
+            <button
+              className="btn-ghost"
+              style={{ marginBottom: 12, width: '100%' }}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={photoUploading}
+            >
+              {photoUploading ? 'Uploading…' : '📷 Add Photo'}
+            </button>
+          )}
+
+          {/* Hidden file input */}
+          {onPhotoChange && (
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
+            />
+          )}
+
           <h2>{recipe.title}</h2>
           <p className="recipe-description">{recipe.description}</p>
 
