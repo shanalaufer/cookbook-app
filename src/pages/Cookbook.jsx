@@ -1,0 +1,112 @@
+import { useState, useEffect, useCallback } from 'react'
+import { useAuth } from '../context/AuthContext'
+import { supabase } from '../lib/supabase'
+import RecipeCard from '../components/RecipeCard'
+import RecipeFullView from '../components/RecipeFullView'
+import AddRecipeModal from '../components/AddRecipeModal'
+import EditRecipeModal from '../components/EditRecipeModal'
+
+export default function Cookbook() {
+  const { user } = useAuth()
+  const [recipes, setRecipes] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const [showAdd, setShowAdd] = useState(false)
+  const [search, setSearch] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from('recipes')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+    setRecipes(data ?? [])
+    setLoading(false)
+  }, [user.id])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleDelete(recipe) {
+    if (!confirm(`Delete "${recipe.title}"?`)) return
+    await supabase.from('recipes').delete().eq('id', recipe.id)
+    setSelected(null)
+    load()
+  }
+
+  const filtered = recipes.filter(r =>
+    r.title.toLowerCase().includes(search.toLowerCase())
+  )
+
+  return (
+    <div className="page">
+      <div className="page-header" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', paddingRight: 52 }}>
+        <div>
+          <h1>Cookbook</h1>
+          <p>{recipes.length} recipe{recipes.length !== 1 ? 's' : ''} saved</p>
+        </div>
+        <button className="fab" onClick={() => setShowAdd(true)}>+</button>
+      </div>
+
+      {recipes.length > 4 && (
+        <input
+          className="input-field"
+          placeholder="Search recipes…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {loading && (
+        <div className="loading-state">
+          <div className="spinner" />
+        </div>
+      )}
+
+      {!loading && recipes.length === 0 && (
+        <div className="empty-state">
+          <div className="empty-icon">📚</div>
+          <p>Your cookbook is empty</p>
+          <p className="hint">Save recipes from Discover, or tap + to add one</p>
+        </div>
+      )}
+
+      <div className="recipe-grid">
+        {filtered.map(recipe => (
+          <RecipeCard key={recipe.id} recipe={recipe} onClick={() => setSelected(recipe)} />
+        ))}
+      </div>
+
+      {selected && !editing && (
+        <RecipeFullView
+          recipe={selected}
+          onClose={() => setSelected(null)}
+          onEdit={() => setEditing(selected)}
+          onDelete={() => handleDelete(selected)}
+          showDeleteButton
+        />
+      )}
+
+      {editing && (
+        <EditRecipeModal
+          recipe={editing}
+          onClose={() => setEditing(null)}
+          onSaved={updated => {
+            setEditing(null)
+            setSelected(updated)
+            setRecipes(prev => prev.map(r => r.id === updated.id ? updated : r))
+          }}
+        />
+      )}
+
+      {showAdd && (
+        <AddRecipeModal
+          onClose={() => setShowAdd(false)}
+          onSaved={() => { setShowAdd(false); load() }}
+        />
+      )}
+    </div>
+  )
+}
