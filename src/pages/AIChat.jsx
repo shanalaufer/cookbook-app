@@ -4,9 +4,17 @@ import { supabase } from '../lib/supabase'
 import { sendChatMessage } from '../lib/ai'
 import RecipeFullView from '../components/RecipeFullView'
 
+// ─── System prompt ────────────────────────────────────────
+
 function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory) {
+  const today = new Date()
+  const dateStr = today.toISOString().slice(0, 10)
+  const dayName = today.toLocaleDateString('en-US', { weekday: 'long' })
+
   const parts = [
-    `You're a warm, knowledgeable friend who absolutely loves food and cooking. You give real, practical advice like you're chatting with a friend — enthusiastic but not over the top, helpful without being preachy. You know your way around a kitchen inside and out.`,
+    `You're a warm, knowledgeable friend who absolutely loves food and cooking. You give real, practical advice like you're chatting with a friend — enthusiastic but not over the top, helpful without being preachy. You know your way around a kitchen inside and out.
+
+Today is ${dayName}, ${dateStr}.`,
   ]
   if (dietaryRestrictions?.trim())
     parts.push(`Dietary restrictions to always follow: ${dietaryRestrictions}`)
@@ -14,24 +22,49 @@ function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory) {
     parts.push(`Here are the recipes they've saved in their cookbook:\n${cookbookContext}`)
   if (shoppingHistory)
     parts.push(`Their past shopping trips (so you know what they usually buy):\n${shoppingHistory}`)
-  parts.push(
-    `When they ask for recipe ideas (e.g. "what can I make", "give me dinner ideas", "recipe for X", "how do I make"):\nReply with ONLY a raw JSON array — no other text:\n[{"title":"Name","description":"2-3 sentences","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}]\n\nFor everything else, chat naturally like a friend would.`
-  )
+
+  parts.push(`RESPONSE RULES — follow these exactly:
+
+Be conversational first. Most messages should feel like texting a foodie friend — casual, warm, direct. Don't always jump to recipes.
+
+Only generate recipe cards when the user clearly wants a full recipe ("give me a recipe for X", "how do I make X", "show me a pasta recipe"). Casual questions like "what should I have for breakfast?" → respond conversationally, maybe ask what they're in the mood for, suggest a direction. NEVER output recipe cards without also writing something — always include a comment, question, or note alongside them.
+
+When you DO generate recipes, wrap the JSON in <recipes> tags and include conversational text before or after — never cards alone:
+<recipes>[{"title":"Name","description":"2-3 sentences","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}]</recipes>
+
+When suggesting multiple specific recipes, use recipe cards (the format above) rather than a plain text list.
+
+ACTIONS — you can write directly to the user's app:
+
+To add to the meal planner, include this tag in your response. Use the actual YYYY-MM-DD date — never the word "today":
+<action>{"type":"add_meal","name":"Dish name","date":"${dateStr}","slot":"lunch"}</action>
+Valid slots: breakfast, lunch, dinner, snack
+
+To add to the shopping list:
+<action>{"type":"add_shopping","items":[{"ingredient":"salmon","category":"Meat"},{"ingredient":"lemon","category":"Produce"}]}</action>
+Categories: Produce, Meat, Dairy, Bakery, Pantry, Frozen, Other
+
+When the user asks to add something, execute the action tag AND confirm in your text exactly what you added and when. Action tags are invisible to the user — your text is the only confirmation they see.`)
+
   return parts.join('\n\n')
 }
 
+// ─── Context relevance filters ────────────────────────────
+
 function needsCookbookContext(text) {
-  return /recipe|cookbook|saved|cook|ingredient|dish|meal|made|what.*(have|make)|my (recipe|food)/i.test(text)
+  return /recipe|cookbook|saved|cook|ingredient|dish|meal|made|what.*(have|make)|my (recipe|food)|planner|add.*to.*(dinner|lunch|breakfast)/i.test(text)
 }
 
 function needsShoppingContext(text) {
   return /shop|buy|bought|groceri|ingredient|list|store|purchase|usually (buy|get)|do i have|missing/i.test(text)
 }
 
-function tryParseRecipes(text) {
-  const match = text.match(/\[[\s\S]*\]/)
-  if (!match) return null
+// ─── Response parsing ─────────────────────────────────────
+
+function tryParseRecipeArray(str) {
   try {
+    const match = str.match(/\[[\s\S]*\]/)
+    if (!match) return null
     const parsed = JSON.parse(match[0])
     if (
       Array.isArray(parsed) &&
@@ -44,9 +77,100 @@ function tryParseRecipes(text) {
   return null
 }
 
+// Parse a message into alternating text / recipe-card segments.
+// Handles new <recipes>...</recipes> format and legacy bare JSON arrays.
+function parseSegments(rawContent) {
+  // New tagged format
+  if (rawContent.includes('<recipes>')) {
+    const segments = []
+    const re = /<recipes>([\s\S]*?)<\/recipes>/g
+    let lastIndex = 0
+    let match
+    while ((match = re.exec(rawContent)) !== null) {
+      const before = rawContent.slice(lastIndex, match.index).trim()
+      if (before) segments.push({ type: 'text', content: before })
+      const recipes = tryParseRecipeArray(match[1].trim())
+      if (recipes) segments.push({ type: 'recipes', content: recipes })
+      lastIndex = match.index + match[0].length
+    }
+    const after = rawContent.slice(lastIndex).trim()
+    if (after) segments.push({ type: 'text', content: after })
+    if (segments.length) return segments
+  }
+
+  // Legacy: bare JSON array (no tags) — backward compat with old chat history
+  const trimmed = rawContent.trim()
+  if (trimmed.startsWith('[')) {
+    const recipes = tryParseRecipeArray(trimmed)
+    if (recipes) return [{ type: 'recipes', content: recipes }]
+  }
+
+  return [{ type: 'text', content: rawContent }]
+}
+
+// Strip <action> tags and return clean display text
+function stripActionTags(text) {
+  return text.replace(/<action>[\s\S]*?<\/action>/g, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+// ─── Action execution ─────────────────────────────────────
+
+function resolveDate(dateStr) {
+  if (!dateStr || dateStr === 'today') return new Date().toISOString().slice(0, 10)
+  if (dateStr === 'tomorrow') {
+    const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10)
+  }
+  return dateStr
+}
+
+async function executeActions(rawReply, userId) {
+  const re = /<action>([\s\S]*?)<\/action>/g
+  let match
+  while ((match = re.exec(rawReply)) !== null) {
+    try {
+      const action = JSON.parse(match[1])
+      if (action.type === 'add_meal') {
+        const date = resolveDate(action.date)
+        const { data: existing } = await supabase
+          .from('meal_plan')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('date', date)
+          .eq('meal_slot', action.slot)
+          .maybeSingle()
+        if (existing) {
+          await supabase.from('meal_plan')
+            .update({ custom_text: action.name, recipe_id: null })
+            .eq('id', existing.id)
+        } else {
+          await supabase.from('meal_plan').insert({
+            user_id: userId,
+            date,
+            meal_slot: action.slot,
+            custom_text: action.name,
+            recipe_id: null,
+          })
+        }
+      } else if (action.type === 'add_shopping') {
+        await supabase.from('shopping_list').insert(
+          (action.items ?? []).map(item => ({
+            user_id: userId,
+            ingredient: item.ingredient,
+            category: item.category ?? 'Other',
+            checked: false,
+          }))
+        )
+      }
+    } catch (err) {
+      console.warn('[Action] failed to execute:', match[1], err)
+    }
+  }
+}
+
+// ─── Component ────────────────────────────────────────────
+
 export default function AIChat() {
   const { user, preferences } = useAuth()
-  // messages: { role: 'user'|'assistant', rawContent: string }
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -74,9 +198,7 @@ export default function AIChat() {
   useEffect(() => { loadHistory() }, [loadHistory])
 
   useEffect(() => {
-    if (historyLoaded) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
+    if (historyLoaded) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, historyLoaded])
 
   async function getCookbookContext() {
@@ -99,14 +221,11 @@ export default function AIChat() {
       .order('cleared_at', { ascending: false })
       .limit(300)
     if (!data?.length) return null
-
-    // Group by cleared_at date so each "shopping trip" is one line
     const byDate = {}
     for (const row of data) {
       const date = row.cleared_at.slice(0, 10)
       if (!byDate[date]) byDate[date] = []
-      const entry = row.recipe_name ? `${row.ingredient} (${row.recipe_name})` : row.ingredient
-      byDate[date].push(entry)
+      byDate[date].push(row.recipe_name ? `${row.ingredient} (${row.recipe_name})` : row.ingredient)
     }
     return Object.entries(byDate)
       .slice(0, 30)
@@ -120,13 +239,11 @@ export default function AIChat() {
     if (!text || loading) return
     setInput('')
 
-    // Add user message and show typing indicator immediately — before any async work
     const userMsg = { role: 'user', rawContent: text }
     setMessages(prev => [...prev, userMsg])
     setLoading(true)
 
     try {
-      // Only fetch context that's relevant to this specific message
       const [cookbookContext, shoppingHistory] = await Promise.all([
         needsCookbookContext(text) ? getCookbookContext() : Promise.resolve(null),
         needsShoppingContext(text) ? getShoppingHistory() : Promise.resolve(null),
@@ -134,11 +251,17 @@ export default function AIChat() {
       const systemPrompt = buildSystem(preferences.dietary_restrictions, cookbookContext, shoppingHistory)
       const rawReply = await sendChatMessage(systemPrompt, messages, text)
 
-      setMessages(prev => [...prev, { role: 'assistant', rawContent: rawReply }])
+      // Execute any embedded actions (meal planner / shopping list writes)
+      await executeActions(rawReply, user.id)
+
+      // Strip action tags before storing — text around them already confirms what happened
+      const displayReply = stripActionTags(rawReply)
+
+      setMessages(prev => [...prev, { role: 'assistant', rawContent: displayReply }])
 
       await supabase.from('chat_history').insert([
         { user_id: user.id, role: 'user',  content: text },
-        { user_id: user.id, role: 'model', content: rawReply },
+        { user_id: user.id, role: 'model', content: displayReply },
       ])
     } catch {
       setMessages(prev => [
@@ -168,6 +291,29 @@ export default function AIChat() {
     setMessages([])
   }
 
+  // ─── Rendering ─────────────────────────────────────────
+
+  function renderRecipeCard(recipe, j) {
+    const isSaved = savedTitles.has(recipe.title)
+    return (
+      <div
+        key={j}
+        className="chat-recipe-card"
+        onClick={() => setSelectedRecipe(recipe)}
+      >
+        <span className="source-tag tag-purple">AI Generated</span>
+        <h4>{recipe.title}</h4>
+        <p>{recipe.description}</p>
+        <button
+          className={`chat-save-btn${isSaved ? ' saved' : ''}`}
+          onClick={e => { e.stopPropagation(); if (!isSaved) saveRecipe(recipe) }}
+        >
+          {isSaved ? '✓ Saved' : '⭐ Save'}
+        </button>
+      </div>
+    )
+  }
+
   function renderMessage(msg, i) {
     if (msg.role === 'user') {
       return (
@@ -177,42 +323,27 @@ export default function AIChat() {
       )
     }
 
-    const recipes = tryParseRecipes(msg.rawContent)
-    if (recipes) {
-      return (
-        <div key={i} className="message-recipes">
-          {recipes.map((recipe, j) => {
-            const isSaved = savedTitles.has(recipe.title)
+    const segments = parseSegments(msg.rawContent)
+    return (
+      <div key={i} className="message-group">
+        {segments.map((seg, j) => {
+          if (seg.type === 'recipes') {
             return (
-              <div
-                key={j}
-                className="chat-recipe-card"
-                onClick={() => setSelectedRecipe(recipe)}
-              >
-                <span className="source-tag tag-purple">AI Generated</span>
-                <h4>{recipe.title}</h4>
-                <p>{recipe.description}</p>
-                <button
-                  className={`chat-save-btn${isSaved ? ' saved' : ''}`}
-                  onClick={e => { e.stopPropagation(); if (!isSaved) saveRecipe(recipe) }}
-                >
-                  {isSaved ? '✓ Saved' : '⭐ Save'}
-                </button>
+              <div key={j} className="message-recipes">
+                {seg.content.map((recipe, k) => renderRecipeCard(recipe, k))}
               </div>
             )
-          })}
-        </div>
-      )
-    }
-
-    // Plain text response
-    return (
-      <div key={i} className="message assistant">
-        <div className="message-bubble">
-          {msg.rawContent.split('\n').map((line, j, arr) => (
-            <span key={j}>{line}{j < arr.length - 1 && <br />}</span>
-          ))}
-        </div>
+          }
+          return (
+            <div key={j} className="message assistant">
+              <div className="message-bubble">
+                {seg.content.split('\n').map((line, l, arr) => (
+                  <span key={l}>{line}{l < arr.length - 1 && <br />}</span>
+                ))}
+              </div>
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -240,14 +371,14 @@ export default function AIChat() {
             <div className="empty-icon">🤖</div>
             <p>Your AI cooking assistant</p>
             <p className="hint">
-              Ask for recipe ideas, search your cookbook, get cooking tips — anything food related.
+              Ask for recipe ideas, add meals to your planner, or just chat about food.
             </p>
             <div className="chat-suggestions">
               {[
-                'Quick weeknight dinners',
-                'What can I make with chicken?',
+                'What should I make for dinner tonight?',
+                'Add salmon to Thursday dinner',
                 'Show me my saved pasta recipes',
-                'Healthy breakfast ideas',
+                'Add eggs and milk to my shopping list',
               ].map(s => (
                 <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>
                   {s}

@@ -130,6 +130,12 @@ export default function AddRecipeModal({ onClose, onSaved }) {
 
   async function handleExtract() {
     setError('')
+
+    if (method === 'url' && /instagram\.com|instagr\.am/i.test(input)) {
+      setError("Instagram links can't be imported directly — screenshot the recipe and upload it as a photo instead!")
+      return
+    }
+
     setLoading(true)
     try {
       const dr = preferences.dietary_restrictions
