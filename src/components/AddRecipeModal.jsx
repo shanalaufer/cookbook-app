@@ -6,7 +6,7 @@ import {
   extractRecipeFromUrl,
   extractRecipeFromImage,
   extractRecipeFromPdf,
-} from '../lib/gemini'
+} from '../lib/ai'
 
 const METHODS = [
   { id: 'text',  icon: '📝', label: 'Paste Text'  },

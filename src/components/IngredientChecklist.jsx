@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { categorizeIngredients } from '../lib/gemini'
+import { categorizeIngredients } from '../lib/ai'
 
 export default function IngredientChecklist({ ingredients, recipeName, recipeId, onDone, onCancel }) {
   const { user } = useAuth()

@@ -1,21 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { GoogleGenerativeAI } from '@google/generative-ai'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
+import { sendChatMessage } from '../lib/ai'
 import RecipeFullView from '../components/RecipeFullView'
 
-const MODEL = 'gemini-3-flash-preview'
-
 function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory) {
-  const parts = ['You are a personal cooking assistant.']
+  const parts = [
+    `You're a warm, knowledgeable friend who absolutely loves food and cooking. You give real, practical advice like you're chatting with a friend — enthusiastic but not over the top, helpful without being preachy. You know your way around a kitchen inside and out.`,
+  ]
   if (dietaryRestrictions?.trim())
-    parts.push(`DIETARY RESTRICTIONS (follow strictly): ${dietaryRestrictions}`)
+    parts.push(`Dietary restrictions to always follow: ${dietaryRestrictions}`)
   if (cookbookContext)
-    parts.push(`USER'S SAVED RECIPES: ${cookbookContext}`)
+    parts.push(`Here are the recipes they've saved in their cookbook:\n${cookbookContext}`)
   if (shoppingHistory)
-    parts.push(`PAST SHOPPING (by date):\n${shoppingHistory}`)
+    parts.push(`Their past shopping trips (so you know what they usually buy):\n${shoppingHistory}`)
   parts.push(
-    `For recipe requests (suggest, generate, ideas, "recipe for", "how to make", "what can I make"):\nReply ONLY with a raw JSON array — no other text:\n[{"title":"Name","description":"2-3 sentences","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}]\n\nFor everything else: plain conversational text.`
+    `When they ask for recipe ideas (e.g. "what can I make", "give me dinner ideas", "recipe for X", "how do I make"):\nReply with ONLY a raw JSON array — no other text:\n[{"title":"Name","description":"2-3 sentences","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}]\n\nFor everything else, chat naturally like a friend would.`
   )
   return parts.join('\n\n')
 }
@@ -131,20 +131,8 @@ export default function AIChat() {
         needsCookbookContext(text) ? getCookbookContext() : Promise.resolve(null),
         needsShoppingContext(text) ? getShoppingHistory() : Promise.resolve(null),
       ])
-      const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY)
-      const model = genAI.getGenerativeModel({
-        model: MODEL,
-        systemInstruction: buildSystem(preferences.dietary_restrictions, cookbookContext, shoppingHistory),
-      })
-
-      // Pass all prior messages as history (current message is sent separately)
-      const history = messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.rawContent }],
-      }))
-      const chat = model.startChat({ history })
-      const result = await chat.sendMessage(text)
-      const rawReply = result.response.text()
+      const systemPrompt = buildSystem(preferences.dietary_restrictions, cookbookContext, shoppingHistory)
+      const rawReply = await sendChatMessage(systemPrompt, messages, text)
 
       setMessages(prev => [...prev, { role: 'assistant', rawContent: rawReply }])
 

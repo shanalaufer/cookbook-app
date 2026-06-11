@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { generateRecipeIdeas } from '../lib/gemini'
+import { generateRecipeIdeas } from '../lib/ai'
 import { supabase } from '../lib/supabase'
 import RecipeCard from '../components/RecipeCard'
 import RecipeFullView from '../components/RecipeFullView'
