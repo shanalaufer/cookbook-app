@@ -7,30 +7,25 @@ import RecipeFullView from '../components/RecipeFullView'
 const MODEL = 'gemini-3-flash-preview'
 
 function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory) {
-  let sys = `You are a helpful personal cooking assistant with full access to the user's cookbook and shopping history.`
+  const parts = ['You are a personal cooking assistant.']
+  if (dietaryRestrictions?.trim())
+    parts.push(`DIETARY RESTRICTIONS (follow strictly): ${dietaryRestrictions}`)
+  if (cookbookContext)
+    parts.push(`USER'S SAVED RECIPES: ${cookbookContext}`)
+  if (shoppingHistory)
+    parts.push(`PAST SHOPPING (by date):\n${shoppingHistory}`)
+  parts.push(
+    `For recipe requests (suggest, generate, ideas, "recipe for", "how to make", "what can I make"):\nReply ONLY with a raw JSON array — no other text:\n[{"title":"Name","description":"2-3 sentences","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}]\n\nFor everything else: plain conversational text.`
+  )
+  return parts.join('\n\n')
+}
 
-  if (dietaryRestrictions?.trim()) {
-    sys += `\n\nDIETARY RESTRICTIONS — follow these strictly in every response: ${dietaryRestrictions}`
-  }
+function needsCookbookContext(text) {
+  return /recipe|cookbook|saved|cook|ingredient|dish|meal|made|what.*(have|make)|my (recipe|food)/i.test(text)
+}
 
-  if (cookbookContext) {
-    sys += `\n\nUSER'S SAVED RECIPES:\n${cookbookContext}`
-  }
-
-  if (shoppingHistory) {
-    sys += `\n\nUSER'S PAST SHOPPING HISTORY (ingredients cleared from shopping list, grouped by date — use this to answer questions like "what do I usually buy", "what ingredients do I typically have", or "am I missing anything"):\n${shoppingHistory}`
-  }
-
-  sys += `
-
-RESPONSE FORMAT RULES — follow exactly:
-
-1. When the user asks you to suggest, generate, or show recipe ideas (e.g. "show me recipes for", "what can I make", "give me dinner ideas", "recipe for", "how do I make"), output ONLY a raw JSON array of exactly 3 recipes with absolutely no other text before or after:
-[{"title":"Recipe Name","description":"2-3 enticing sentences","ingredients":["amount ingredient"],"instructions":"1. Step one\\n2. Step two\\n3. Step three"}]
-
-2. For everything else — questions, cookbook search, cooking tips, substitutions, meal planning advice — respond in plain conversational text. Never use JSON for non-recipe responses.`
-
-  return sys
+function needsShoppingContext(text) {
+  return /shop|buy|bought|groceri|ingredient|list|store|purchase|usually (buy|get)|do i have|missing/i.test(text)
 }
 
 function tryParseRecipes(text) {
@@ -87,11 +82,13 @@ export default function AIChat() {
   async function getCookbookContext() {
     const { data } = await supabase
       .from('recipes')
-      .select('title,description')
+      .select('title,description,ingredients')
       .eq('user_id', user.id)
       .limit(60)
     if (!data?.length) return null
-    return data.map(r => `- ${r.title}${r.description ? ': ' + r.description.slice(0, 80) : ''}`).join('\n')
+    return data.map(r =>
+      `- ${r.title}${r.description ? ': ' + r.description.slice(0, 80) : ''}${r.ingredients?.length ? ' [' + r.ingredients.join(', ') + ']' : ''}`
+    ).join('\n')
   }
 
   async function getShoppingHistory() {
@@ -123,14 +120,16 @@ export default function AIChat() {
     if (!text || loading) return
     setInput('')
 
+    // Add user message and show typing indicator immediately — before any async work
     const userMsg = { role: 'user', rawContent: text }
     setMessages(prev => [...prev, userMsg])
     setLoading(true)
 
     try {
+      // Only fetch context that's relevant to this specific message
       const [cookbookContext, shoppingHistory] = await Promise.all([
-        getCookbookContext(),
-        getShoppingHistory(),
+        needsCookbookContext(text) ? getCookbookContext() : Promise.resolve(null),
+        needsShoppingContext(text) ? getShoppingHistory() : Promise.resolve(null),
       ])
       const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY)
       const model = genAI.getGenerativeModel({
