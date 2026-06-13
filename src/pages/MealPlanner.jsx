@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 
@@ -140,7 +141,7 @@ export default function MealPlanner() {
         </div>
       ))}
 
-      {editing && (
+      {editing && createPortal(
         <div className="modal-overlay" onClick={() => setEditing(null)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setEditing(null)}>✕</button>
@@ -185,7 +186,8 @@ export default function MealPlanner() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

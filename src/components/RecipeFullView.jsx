@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import IngredientChecklist from './IngredientChecklist'
 
 export default function RecipeFullView({
@@ -56,7 +57,7 @@ export default function RecipeFullView({
     }
   }
 
-  return (
+  return createPortal(
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
@@ -166,6 +167,7 @@ export default function RecipeFullView({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

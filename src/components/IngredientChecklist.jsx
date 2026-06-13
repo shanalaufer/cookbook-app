@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { categorizeIngredients } from '../lib/ai'
@@ -41,7 +42,7 @@ export default function IngredientChecklist({ ingredients, recipeName, recipeId,
     }
   }
 
-  return (
+  return createPortal(
     <div className="modal-overlay">
       <div className="modal-content">
         <div className="checklist-header">
@@ -69,6 +70,7 @@ export default function IngredientChecklist({ ingredients, recipeName, recipeId,
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import * as pdfjs from 'pdfjs-dist'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -228,7 +229,7 @@ export default function AddRecipeModal({ onClose, onSaved }) {
     const visible = showAllIngredients ? total : Math.min(6, total)
     const hidden  = total - visible
 
-    return (
+    return createPortal(
       <div className="modal-overlay" onClick={onClose}>
         <div className="modal-content" onClick={e => e.stopPropagation()}>
           <button className="modal-close" onClick={onClose}>✕</button>
@@ -273,12 +274,13 @@ export default function AddRecipeModal({ onClose, onSaved }) {
             </button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     )
   }
 
   // ── Input step ──────────────────────────────────────────
-  return (
+  return createPortal(
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
@@ -348,6 +350,7 @@ export default function AddRecipeModal({ onClose, onSaved }) {
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

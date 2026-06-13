@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from '../lib/supabase'
 
 export default function EditRecipeModal({ recipe, onClose, onSaved }) {
@@ -45,7 +46,7 @@ export default function EditRecipeModal({ recipe, onClose, onSaved }) {
     }
   }
 
-  return (
+  return createPortal(
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
@@ -123,6 +124,7 @@ export default function EditRecipeModal({ recipe, onClose, onSaved }) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
