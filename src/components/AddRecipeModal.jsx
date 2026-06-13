@@ -1,12 +1,29 @@
 import { useState, useRef, useEffect } from 'react'
+import * as pdfjs from 'pdfjs-dist'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import {
   extractRecipeFromText,
   extractRecipeFromUrl,
   extractRecipeFromImage,
-  extractRecipeFromPdf,
 } from '../lib/ai'
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).href
+
+async function extractPdfText(file) {
+  const arrayBuffer = await file.arrayBuffer()
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
+  const pages = []
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i)
+    const content = await page.getTextContent()
+    pages.push(content.items.map(item => item.str).join(' '))
+  }
+  return pages.join('\n')
+}
 
 const METHODS = [
   { id: 'text',  icon: '📝', label: 'Paste Text'  },
@@ -15,12 +32,22 @@ const METHODS = [
   { id: 'url',   icon: '🔗', label: 'URL / Link'   },
 ]
 
-function fileToBase64(file) {
+function resizeImage(file, maxSide = 800) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload  = () => resolve(reader.result.split(',')[1])
-    reader.onerror = reject
-    reader.readAsDataURL(file)
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight))
+      const canvas = document.createElement('canvas')
+      canvas.width  = Math.round(img.naturalWidth  * scale)
+      canvas.height = Math.round(img.naturalHeight * scale)
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+      resolve({ data: dataUrl.split(',')[1], mimeType: 'image/jpeg' })
+    }
+    img.onerror = reject
+    img.src = url
   })
 }
 
@@ -153,14 +180,14 @@ export default function AddRecipeModal({ onClose, onSaved }) {
       } else if (method === 'photo') {
         const file = droppedFile
         if (!file) { setError('Please select or paste an image.'); return }
-        const b64 = await fileToBase64(file)
-        recipe = await extractRecipeFromImage(b64, file.type, dr)
+        const { data: b64, mimeType } = await resizeImage(file)
+        recipe = await extractRecipeFromImage(b64, mimeType, dr)
 
       } else if (method === 'pdf') {
         const file = droppedFile
         if (!file) { setError('Please select a PDF.'); return }
-        const b64 = await fileToBase64(file)
-        recipe = await extractRecipeFromPdf(b64, dr)
+        const pdfText = await extractPdfText(file)
+        recipe = await extractRecipeFromText(pdfText, dr)
       }
 
       setPreview(recipe)

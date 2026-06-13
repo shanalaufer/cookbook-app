@@ -12,7 +12,7 @@ function getGroqClient() {
   })
 }
 
-// ─── Gemini — used only for image + PDF (multimodal) ─────
+// ─── Gemini — used only for image vision ─────────────────
 const GEMINI_MODEL = 'gemini-2.0-flash'
 
 function getGeminiModel(systemInstruction) {
@@ -116,7 +116,7 @@ export async function extractRecipeFromUrl(url, pageText, dietaryRestrictions) {
   return parseJSON(raw)
 }
 
-// ─── Recipe extraction — image + PDF (Gemini) ────────────
+// ─── Recipe extraction — image (Gemini) ──────────────────
 
 export async function extractRecipeFromImage(base64Data, mimeType, dietaryRestrictions) {
   const system = `You extract recipes from food images. Reply with raw JSON only — no markdown.${dietaryNote(dietaryRestrictions)}`
@@ -128,22 +128,6 @@ export async function extractRecipeFromImage(base64Data, mimeType, dietaryRestri
     () => model.generateContent([
       { text: prompt },
       { inlineData: { data: base64Data, mimeType } },
-    ]),
-    'Gemini'
-  )
-  return parseJSON(result.response.text())
-}
-
-export async function extractRecipeFromPdf(base64Data, dietaryRestrictions) {
-  const system = `You extract recipes from documents. Reply with raw JSON only — no markdown.${dietaryNote(dietaryRestrictions)}`
-  const prompt = `Extract the recipe from this PDF:\n{"title":"","description":"Brief appealing description","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}`
-  const model = getGeminiModel(system)
-  const result = await timedCall(
-    'extract recipe from PDF',
-    [system, prompt],
-    () => model.generateContent([
-      { text: prompt },
-      { inlineData: { data: base64Data, mimeType: 'application/pdf' } },
     ]),
     'Gemini'
   )
