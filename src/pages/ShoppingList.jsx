@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 
@@ -41,6 +42,9 @@ export default function ShoppingList() {
   const [manualInput, setManualInput] = useState('')
   const [manualCategory, setManualCategory] = useState('Produce')
   const [loading, setLoading] = useState(true)
+  const [editingItem, setEditingItem] = useState(null)
+  const [editName, setEditName] = useState('')
+  const [editCategory, setEditCategory] = useState('Produce')
 
   const load = useCallback(async () => {
     const { data } = await supabase
@@ -80,6 +84,30 @@ export default function ShoppingList() {
 
     await supabase.from('shopping_list').delete().in('id', checkedItems.map(i => i.id))
     setItems(prev => prev.filter(i => !i.checked))
+  }
+
+  function openEdit(group) {
+    setEditName(group.ingredient)
+    setEditCategory(group.category)
+    setEditingItem(group)
+  }
+
+  async function saveEdit() {
+    const name = editName.trim()
+    if (!name) return
+    await supabase
+      .from('shopping_list')
+      .update({ ingredient: name, category: editCategory })
+      .in('id', editingItem.ids)
+    setItems(prev => prev.map(i =>
+      editingItem.ids.includes(i.id) ? { ...i, ingredient: name, category: editCategory } : i
+    ))
+    setEditingItem(null)
+  }
+
+  async function deleteItem(group) {
+    await supabase.from('shopping_list').delete().in('id', group.ids)
+    setItems(prev => prev.filter(i => !group.ids.includes(i.id)))
   }
 
   async function addManual(e) {
@@ -163,10 +191,60 @@ export default function ShoppingList() {
                   <div className="shopping-recipe">({group.recipe_names.join(', ')})</div>
                 )}
               </div>
+              <div className="shopping-item-actions">
+                <button
+                  className="shopping-action-btn"
+                  onClick={e => { e.stopPropagation(); openEdit(group) }}
+                  aria-label="Edit"
+                >✏️</button>
+                <button
+                  className="shopping-action-btn shopping-delete-btn"
+                  onClick={e => { e.stopPropagation(); deleteItem(group) }}
+                  aria-label="Delete"
+                >×</button>
+              </div>
             </div>
           ))}
         </div>
       ))}
+      {editingItem && createPortal(
+        <div className="modal-overlay" onClick={() => setEditingItem(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setEditingItem(null)}>✕</button>
+            <h3 className="modal-title">Edit Item</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label className="settings-label">Item</label>
+                <input
+                  className="input-field"
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  style={{ marginTop: 6 }}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="settings-label">Category</label>
+                <select
+                  className="input-field"
+                  value={editCategory}
+                  onChange={e => setEditCategory(e.target.value)}
+                  style={{ marginTop: 6 }}
+                >
+                  {CATEGORY_ORDER.map(c => (
+                    <option key={c} value={c}>{CATEGORY_ICONS[c]} {c}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="checklist-actions" style={{ marginTop: 20 }}>
+              <button className="btn-ghost" onClick={() => setEditingItem(null)}>Cancel</button>
+              <button className="btn-primary" onClick={saveEdit} disabled={!editName.trim()}>Save</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }

@@ -361,6 +361,16 @@ select.input-field { cursor: pointer; }
 .shopping-item-text { flex: 1; min-width: 0; }
 .shopping-ingredient { font-size: 14px; font-weight: 500; }
 .shopping-recipe { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+.shopping-item-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.shopping-action-btn {
+  width: 30px; height: 30px; border-radius: 8px; border: none;
+  background: transparent; cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); transition: background .15s, color .15s;
+}
+.shopping-action-btn:hover { background: var(--border); }
+.shopping-delete-btn { font-size: 18px; font-weight: 300; }
+.shopping-delete-btn:hover { background: #fee2e2; color: #dc2626; }
 
 /* ─── Meal planner ───────────────────────────────────── */
 .week-nav { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; margin-bottom: 12px; }
