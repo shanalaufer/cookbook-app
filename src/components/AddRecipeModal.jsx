@@ -14,8 +14,17 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).href
 
+function readAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsArrayBuffer(file)
+  })
+}
+
 async function extractPdfText(file) {
-  const arrayBuffer = await file.arrayBuffer()
+  const arrayBuffer = await readAsArrayBuffer(file)
   const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
   const pages = []
   for (let i = 1; i <= pdf.numPages; i++) {
