@@ -56,7 +56,7 @@ html, body, #root {
 /* ─── Bottom nav ─────────────────────────────────────── */
 .bottom-nav {
   display: flex;
-  height: var(--nav-height);
+  height: calc(var(--nav-height) + env(safe-area-inset-bottom));
   background: var(--card);
   border-top: 1px solid var(--border);
   padding-bottom: env(safe-area-inset-bottom);

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#C4622D"/>
+
+  <!-- Fork (centred at x=192) -->
+  <rect x="165" y="96"  width="14" height="106" rx="7"  fill="white"/>
+  <rect x="185" y="96"  width="14" height="106" rx="7"  fill="white"/>
+  <rect x="205" y="96"  width="14" height="106" rx="7"  fill="white"/>
+  <rect x="163" y="188" width="58" height="34"  rx="6"  fill="white"/>
+  <rect x="180" y="212" width="24" height="206" rx="12" fill="white"/>
+
+  <!-- Spoon (centred at x=320) -->
+  <ellipse cx="320" cy="158" rx="40" ry="54" fill="white"/>
+  <rect x="308" y="204" width="24" height="214" rx="12" fill="white"/>
+</svg>
