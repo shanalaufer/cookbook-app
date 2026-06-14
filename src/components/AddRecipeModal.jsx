@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import * as pdfjs from 'pdfjs-dist'
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import PdfJsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -20,16 +20,21 @@ function readAsArrayBuffer(file) {
 }
 
 async function extractPdfText(file) {
-  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
-  const arrayBuffer = await readAsArrayBuffer(file)
-  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
-  const pages = []
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i)
-    const content = await page.getTextContent({ includeMarkedContent: false })
-    pages.push(content.items.map(item => item.str).join(' '))
+  const worker = new PdfJsWorker()
+  pdfjs.GlobalWorkerOptions.workerPort = worker
+  try {
+    const arrayBuffer = await readAsArrayBuffer(file)
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
+    const pages = []
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i)
+      const content = await page.getTextContent({ includeMarkedContent: false })
+      pages.push(content.items.map(item => item.str).join(' '))
+    }
+    return pages.join('\n')
+  } finally {
+    worker.terminate()
   }
-  return pages.join('\n')
 }
 
 const METHODS = [
