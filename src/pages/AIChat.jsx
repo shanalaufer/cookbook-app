@@ -46,7 +46,7 @@ To add to the shopping list:
 <action>{"type":"add_shopping","items":[{"ingredient":"salmon","category":"Meat"},{"ingredient":"lemon","category":"Produce"}]}</action>
 Categories: Produce, Meat, Dairy, Bakery, Pantry, Frozen, Other
 
-When the user asks to add something, execute the action tag AND confirm in your text exactly what you added and when — one short sentence is enough. Never say the same confirmation twice or rephrase it a second time in the same response. Never repeat back or display the full shopping list or meal plan in the chat. Action tags are invisible to the user — your text is the only confirmation they see.`)
+When the user asks to add something, execute the action tag AND confirm in your text exactly what you added and when — one short sentence is enough. Never say the same confirmation twice or rephrase it a second time in the same response. Never say 'here's the update', 'here's your updated list', or any similar phrase — just confirm the action and stop. Never repeat back or display the full shopping list or meal plan in the chat. Action tags are invisible to the user — your text is the only confirmation they see.`)
 
   return parts.join('\n\n')
 }
