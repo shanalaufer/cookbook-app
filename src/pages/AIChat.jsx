@@ -12,7 +12,6 @@ function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory) {
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' })
 
   const parts = [
-    `CRITICAL: Never say phrases like "here's the update", "here's your updated list", or similar. After taking an action, write ONE short confirmation sentence and nothing else.`,
     `You're a warm, knowledgeable friend who absolutely loves food and cooking. You give real, practical advice like you're chatting with a friend — enthusiastic but not over the top, helpful without being preachy. You know your way around a kitchen inside and out.
 
 Today is ${dayName}, ${dateStr}.`,
@@ -47,7 +46,7 @@ To add to the shopping list:
 <action>{"type":"add_shopping","items":[{"ingredient":"salmon","category":"Meat"},{"ingredient":"lemon","category":"Produce"}]}</action>
 Categories: Produce, Meat, Dairy, Bakery, Pantry, Frozen, Other
 
-When the user asks to add something, execute the action tag AND confirm in your text exactly what you added and when — one short sentence is enough. Never repeat back or display the full shopping list or meal plan in the chat. Action tags are invisible to the user — your text is the only confirmation they see.`)
+When the user asks to add something, execute the action tag AND confirm in your text exactly what you added and when — one short sentence is enough. Do not list out the shopping list contents, do not summarize what else is on the list, do not mention other items. Just confirm what was added. Never repeat back or display the full shopping list or meal plan in the chat. Action tags are invisible to the user — your text is the only confirmation they see.`)
 
   return parts.join('\n\n')
 }
@@ -113,7 +112,16 @@ function parseSegments(rawContent) {
 
 // Strip <action> tags and return clean display text
 function stripActionTags(text) {
-  return text.replace(/<action>[\s\S]*?<\/action>/g, '').replace(/\n{3,}/g, '\n\n').trim()
+  const stripped = text.replace(/<action>[\s\S]*?<\/action>/g, '').replace(/\n{3,}/g, '\n\n').trim()
+
+  // Remove any sentence after the first that looks like a comma-separated list of items
+  const sentences = stripped.match(/[^.!?]*[.!?]+\s*/g)
+  if (!sentences || sentences.length <= 1) return stripped
+  return sentences.filter((s, i) => {
+    if (i === 0) return true
+    const commaCount = (s.match(/,/g) ?? []).length
+    return commaCount < 2
+  }).join('').trim()
 }
 
 // ─── Action execution ─────────────────────────────────────
