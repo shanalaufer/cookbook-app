@@ -19,19 +19,35 @@ function readAsArrayBuffer(file) {
   })
 }
 
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+}
+
+async function readPdfPages(pdf) {
+  const pages = []
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i)
+    const content = await page.getTextContent({ includeMarkedContent: false })
+    pages.push(content.items.map(item => item.str).join(' '))
+  }
+  return pages.join('\n')
+}
+
 async function extractPdfText(file) {
+  const arrayBuffer = await readAsArrayBuffer(file)
+
+  if (isIOS()) {
+    pdfjs.GlobalWorkerOptions.workerSrc = ''
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer, disableWorker: true }).promise
+    return readPdfPages(pdf)
+  }
+
   const worker = new PdfJsWorker()
   pdfjs.GlobalWorkerOptions.workerPort = worker
   try {
-    const arrayBuffer = await readAsArrayBuffer(file)
     const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
-    const pages = []
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i)
-      const content = await page.getTextContent({ includeMarkedContent: false })
-      pages.push(content.items.map(item => item.str).join(' '))
-    }
-    return pages.join('\n')
+    return await readPdfPages(pdf)
   } finally {
     worker.terminate()
   }
