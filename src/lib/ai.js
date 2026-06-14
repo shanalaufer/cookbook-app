@@ -116,6 +116,24 @@ export async function extractRecipeFromUrl(url, pageText, dietaryRestrictions) {
   return parseJSON(raw)
 }
 
+// ─── Recipe extraction — PDF via Gemini (iOS fallback) ───
+
+export async function extractRecipeFromPdf(base64Data, dietaryRestrictions) {
+  const system = `You extract recipes from PDF documents. Reply with raw JSON only — no markdown.${dietaryNote(dietaryRestrictions)}`
+  const prompt = `Extract the recipe from this PDF document:\n{"title":"","description":"Brief appealing description","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}`
+  const model = getGeminiModel(system)
+  const result = await timedCall(
+    'extract recipe from PDF',
+    [system, prompt],
+    () => model.generateContent([
+      { text: prompt },
+      { inlineData: { data: base64Data, mimeType: 'application/pdf' } },
+    ]),
+    'Gemini'
+  )
+  return parseJSON(result.response.text())
+}
+
 // ─── Recipe extraction — image (Gemini) ──────────────────
 
 export async function extractRecipeFromImage(base64Data, mimeType, dietaryRestrictions) {

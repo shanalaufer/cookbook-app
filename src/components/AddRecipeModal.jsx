@@ -8,6 +8,7 @@ import {
   extractRecipeFromText,
   extractRecipeFromUrl,
   extractRecipeFromImage,
+  extractRecipeFromPdf,
 } from '../lib/ai'
 
 function readAsArrayBuffer(file) {
@@ -24,30 +25,28 @@ function isIOS() {
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 }
 
-async function readPdfPages(pdf) {
-  const pages = []
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i)
-    const content = await page.getTextContent({ includeMarkedContent: false })
-    pages.push(content.items.map(item => item.str).join(' '))
-  }
-  return pages.join('\n')
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result.split(',')[1])
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
 }
 
 async function extractPdfText(file) {
-  const arrayBuffer = await readAsArrayBuffer(file)
-
-  if (isIOS()) {
-    pdfjs.GlobalWorkerOptions.workerSrc = ''
-    const pdf = await pdfjs.getDocument({ data: arrayBuffer, disableWorker: true }).promise
-    return readPdfPages(pdf)
-  }
-
   const worker = new PdfJsWorker()
   pdfjs.GlobalWorkerOptions.workerPort = worker
   try {
+    const arrayBuffer = await readAsArrayBuffer(file)
     const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
-    return await readPdfPages(pdf)
+    const pages = []
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i)
+      const content = await page.getTextContent({ includeMarkedContent: false })
+      pages.push(content.items.map(item => item.str).join(' '))
+    }
+    return pages.join('\n')
   } finally {
     worker.terminate()
   }
@@ -214,8 +213,13 @@ export default function AddRecipeModal({ onClose, onSaved }) {
       } else if (method === 'pdf') {
         const file = droppedFile
         if (!file) { setError('Please select a PDF.'); return }
-        const pdfText = await extractPdfText(file)
-        recipe = await extractRecipeFromText(pdfText, dr)
+        if (isIOS()) {
+          const b64 = await fileToBase64(file)
+          recipe = await extractRecipeFromPdf(b64, dr)
+        } else {
+          const pdfText = await extractPdfText(file)
+          recipe = await extractRecipeFromText(pdfText, dr)
+        }
       }
 
       setPreview(recipe)
