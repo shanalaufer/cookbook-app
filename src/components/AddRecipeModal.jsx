@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import * as pdfjs from 'pdfjs-dist'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -19,7 +20,7 @@ function readAsArrayBuffer(file) {
 }
 
 async function extractPdfText(file) {
-  pdfjs.GlobalWorkerOptions.workerSrc = ''
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
   const arrayBuffer = await readAsArrayBuffer(file)
   const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise
   const pages = []
