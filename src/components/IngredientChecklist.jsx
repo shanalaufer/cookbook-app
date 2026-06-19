@@ -4,6 +4,17 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { categorizeIngredients } from '../lib/ai'
 
+// Splits "2 cups flour" → { amount: "2 cups", name: "flour" }
+// Strings with no leading quantity → { amount: "", name: <original> }
+function parseIngredient(raw) {
+  const str = raw.trim()
+  const m = str.match(
+    /^([\d¼½¾⅓⅔⅛⅜⅝⅞][\d\s./\-–]*(?:\([^)]*\)\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|fl\.?\s*oz|fluid\s+oz|ounces?|oz|pounds?|lbs?|lb|grams?|g|kg|ml|liters?|l|quarts?|qt|pints?|pt|gallons?|cans?|jars?|pkgs?|packages?|cloves?|heads?|bunches?|slices?|pieces?|stalks?|sprigs?|large|medium|small|whole)?)\s+(.+)/i
+  )
+  if (m && m[2].trim()) return { amount: m[1].trim(), name: m[2].trim() }
+  return { amount: '', name: str }
+}
+
 export default function IngredientChecklist({ ingredients, recipeName, recipeId, onDone, onCancel }) {
   const { user } = useAuth()
   const [checked, setChecked] = useState(() => new Set(ingredients.map((_, i) => i)))
@@ -24,15 +35,18 @@ export default function IngredientChecklist({ ingredients, recipeName, recipeId,
     if (!selected.length) { onDone(); return }
     setLoading(true)
     try {
-      let categories = {}
-      try { categories = await categorizeIngredients(selected) } catch { /* fallback to Other */ }
+      const parsed = selected.map(parseIngredient)
+      const names = parsed.map(p => p.name)
 
-      const rows = selected.map(ing => ({
+      let categories = {}
+      try { categories = await categorizeIngredients(names) } catch { /* fallback to Other */ }
+
+      const rows = parsed.map(({ name, amount }) => ({
         user_id: user.id,
-        ingredient: ing,
-        category: categories[ing] ?? categories[ing.toLowerCase()] ?? 'Other',
+        ingredient: name,
+        category: categories[name] ?? categories[name.toLowerCase()] ?? 'Other',
         recipe_id: recipeId ?? null,
-        recipe_name: recipeName ?? null,
+        recipe_name: amount && recipeName ? `${amount} · ${recipeName}` : (recipeName ?? null),
         checked: false,
       }))
       await supabase.from('shopping_list').insert(rows)

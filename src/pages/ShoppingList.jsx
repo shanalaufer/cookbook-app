@@ -12,7 +12,10 @@ const CATEGORY_ICONS = {
 function groupItems(items) {
   const merged = {}
   for (const item of items) {
-    const key = `${item.category}|||${item.ingredient.toLowerCase().trim()}`
+    // Manual items (no recipe source) never merge — each gets its own row
+    const key = item.recipe_name
+      ? `${item.category}|||${item.ingredient.toLowerCase().trim()}`
+      : `manual|||${item.id}`
     if (merged[key]) {
       if (item.recipe_name && !merged[key].recipe_names.includes(item.recipe_name)) {
         merged[key].recipe_names.push(item.recipe_name)
