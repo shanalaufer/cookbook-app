@@ -419,6 +419,14 @@ select.input-field { cursor: pointer; }
   border: 1px solid var(--border); border-bottom-left-radius: 4px;
 }
 
+.message-bubble.markdown p { margin: 0 0 6px; }
+.message-bubble.markdown p:last-child { margin-bottom: 0; }
+.message-bubble.markdown ul, .message-bubble.markdown ol { margin: 4px 0 6px; padding-left: 20px; }
+.message-bubble.markdown li { margin-bottom: 2px; }
+.message-bubble.markdown h1, .message-bubble.markdown h2, .message-bubble.markdown h3 { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }
+.message-bubble.markdown strong { font-weight: 600; }
+.message-bubble.markdown code { font-size: 12px; background: var(--background); padding: 1px 4px; border-radius: 3px; }
+
 .typing { display: flex; gap: 4px; align-items: center; padding: 12px 16px; }
 .dot {
   width: 7px; height: 7px; border-radius: 50%;

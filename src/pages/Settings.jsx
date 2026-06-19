@@ -85,7 +85,7 @@ export default function Settings() {
           </div>
           <div className="settings-row">
             <span>AI model</span>
-            <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>Llama 3.3 70B via Groq · Gemini for images</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>Gemini 2.5 Flash · Llama 3.3 70B via Groq for extraction</span>
           </div>
         </div>
       </div>

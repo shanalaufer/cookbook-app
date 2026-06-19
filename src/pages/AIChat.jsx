@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
 import { sendChatMessage } from '../lib/ai'
 import RecipeFullView from '../components/RecipeFullView'
+import ReactMarkdown from 'react-markdown'
 
 // ─── System prompt ────────────────────────────────────────
 
@@ -112,16 +113,7 @@ function parseSegments(rawContent) {
 
 // Strip <action> tags and return clean display text
 function stripActionTags(text) {
-  const stripped = text.replace(/<action>[\s\S]*?<\/action>/g, '').replace(/\n{3,}/g, '\n\n').trim()
-
-  // Remove any sentence after the first that looks like a comma-separated list of items
-  const sentences = stripped.match(/[^.!?]*[.!?]+\s*/g)
-  if (!sentences || sentences.length <= 1) return stripped
-  return sentences.filter((s, i) => {
-    if (i === 0) return true
-    const commaCount = (s.match(/,/g) ?? []).length
-    return commaCount < 2
-  }).join('').trim()
+  return text.replace(/<action>[\s\S]*?<\/action>/g, '').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 // ─── Action execution ─────────────────────────────────────
@@ -274,7 +266,8 @@ export default function AIChat() {
         { user_id: user.id, role: 'user',  content: text },
         { user_id: user.id, role: 'model', content: displayReply },
       ])
-    } catch {
+    } catch (err) {
+      console.error('[Chat] send failed:', err)
       setMessages(prev => [
         ...prev,
         { role: 'assistant', rawContent: 'Sorry, something went wrong. Please try again.' },
@@ -347,10 +340,8 @@ export default function AIChat() {
           }
           return (
             <div key={j} className="message assistant">
-              <div className="message-bubble">
-                {seg.content.split('\n').map((line, l, arr) => (
-                  <span key={l}>{line}{l < arr.length - 1 && <br />}</span>
-                ))}
+              <div className="message-bubble markdown">
+                <ReactMarkdown>{seg.content}</ReactMarkdown>
               </div>
             </div>
           )

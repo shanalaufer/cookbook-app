@@ -12,8 +12,8 @@ function getGroqClient() {
   })
 }
 
-// ─── Gemini — used only for image vision ─────────────────
-const GEMINI_MODEL = 'gemini-2.0-flash'
+// ─── Gemini — image vision + chat ────────────────────────
+const GEMINI_MODEL = 'gemini-2.5-flash'
 
 function getGeminiModel(systemInstruction) {
   const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY)
@@ -81,16 +81,17 @@ async function groqChat(messages, label) {
   return responseText(completion)
 }
 
-// ─── Recipe generation (Groq) ─────────────────────────────
+// ─── Recipe generation (Gemini) ───────────────────────────
 
 export async function generateRecipeIdeas(query, dietaryRestrictions) {
   const system = `You're an enthusiastic home cook who loves sharing recipes. You know everything about food and get genuinely excited to help. When asked for recipe ideas, respond with ONLY a raw JSON array — no markdown fences, no commentary.${dietaryNote(dietaryRestrictions)}`
   const prompt = `Give me 3 recipe ideas for: ${query}\n\n[{"title":"","description":"2-3 exciting sentences","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}]`
-  const raw = await groqChat([
-    { role: 'system', content: system },
-    { role: 'user',   content: prompt },
-  ], 'recipe generation')
-  return parseJSON(raw, true)
+  const model = getGeminiModel(system)
+  const result = await timedCall('recipe generation', [system, prompt], () =>
+    model.generateContent(prompt),
+    'Gemini'
+  )
+  return parseJSON(result.response.text(), true)
 }
 
 // ─── Recipe extraction — text + URL (Groq) ───────────────
@@ -181,21 +182,21 @@ export async function categorizeIngredients(ingredients) {
   }
 }
 
-// ─── Chat (Groq) ──────────────────────────────────────────
+// ─── Chat (Gemini) ────────────────────────────────────────
 
 export async function sendChatMessage(systemPrompt, history, userMessage) {
-  const client = getGroqClient()
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    ...history.map(m => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.rawContent,
-    })),
-    { role: 'user', content: userMessage },
-  ]
+  const model = getGeminiModel(systemPrompt)
+  const geminiHistory = history.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.rawContent }],
+  }))
+  // Gemini requires history to start with a user turn
+  while (geminiHistory.length > 0 && geminiHistory[0].role === 'model') geminiHistory.shift()
+  const chat = model.startChat({ history: geminiHistory })
   const allText = systemPrompt + history.map(m => m.rawContent).join(' ') + userMessage
-  const completion = await timedCall('chat message', [allText], () =>
-    client.chat.completions.create({ model: GROQ_MODEL, messages })
+  const result = await timedCall('chat message', [allText], () =>
+    chat.sendMessage(userMessage),
+    'Gemini'
   )
-  return responseText(completion)
+  return result.response.text()
 }
