@@ -5,6 +5,7 @@ import RecipeCard from '../components/RecipeCard'
 import RecipeFullView from '../components/RecipeFullView'
 import AddRecipeModal from '../components/AddRecipeModal'
 import EditRecipeModal from '../components/EditRecipeModal'
+import { uploadRecipePhotoFile, deleteRecipePhotoByUrl } from '../lib/image'
 
 export default function Cookbook() {
   const { user } = useAuth()
@@ -36,13 +37,13 @@ export default function Cookbook() {
   }
 
   async function handlePhotoUpload(recipe, file) {
-    const ext = file.name.split('.').pop() || 'jpg'
-    const path = `${user.id}/${recipe.id}-${Date.now()}.${ext}`
-    const { error: uploadError } = await supabase.storage
-      .from('recipe-photos')
-      .upload(path, file, { upsert: true })
-    if (uploadError) { alert('Photo upload failed: ' + uploadError.message); return }
-    const { data: { publicUrl } } = supabase.storage.from('recipe-photos').getPublicUrl(path)
+    let publicUrl
+    try {
+      publicUrl = await uploadRecipePhotoFile(file, user.id)
+    } catch (e) {
+      alert('Photo upload failed: ' + e.message)
+      return
+    }
     const { error: dbError } = await supabase
       .from('recipes')
       .update({ source_image: publicUrl })
@@ -55,13 +56,7 @@ export default function Cookbook() {
 
   async function handlePhotoDelete(recipe) {
     if (!confirm('Remove this photo?')) return
-    // Extract the storage path from the public URL (everything after /recipe-photos/)
-    const url = recipe.source_image
-    const marker = '/recipe-photos/'
-    const storagePath = url.includes(marker) ? url.split(marker)[1].split('?')[0] : null
-    if (storagePath) {
-      await supabase.storage.from('recipe-photos').remove([storagePath])
-    }
+    await deleteRecipePhotoByUrl(recipe.source_image)
     const { error } = await supabase
       .from('recipes')
       .update({ source_image: null })

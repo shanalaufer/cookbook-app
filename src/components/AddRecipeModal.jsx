@@ -10,6 +10,7 @@ import {
   extractRecipeFromImage,
   extractRecipeFromPdf,
 } from '../lib/ai'
+import { uploadRecipePhoto } from '../lib/image'
 
 function readAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
@@ -209,6 +210,11 @@ export default function AddRecipeModal({ onClose, onSaved }) {
         if (!file) { setError('Please select or paste an image.'); return }
         const { data: b64, mimeType } = await resizeImage(file)
         recipe = await extractRecipeFromImage(b64, mimeType, dr)
+        try {
+          recipe._sourceImage = await uploadRecipePhoto(b64, user.id)
+        } catch (e) {
+          console.warn('[Photo upload] storage upload failed:', e.message)
+        }
 
       } else if (method === 'pdf') {
         const file = droppedFile

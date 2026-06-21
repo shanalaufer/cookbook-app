@@ -37,17 +37,34 @@ When suggesting multiple specific recipes, use recipe cards (the format above) r
 
 ASSUMPTIONS — whenever you're not certain what the user means, briefly state what you inferred and where you got it from, then ask to confirm before acting. Example: 'I see Honey Garlic Pargiot in your shopping history — is that the one you meant?' or 'I'm assuming you mean next Thursday (June 19) — should I go ahead?' Never silently fill in an ambiguous blank.
 
-ACTIONS — you can write directly to the user's app:
+ACTIONS — how you actually write to the user's app:
 
-To add to the meal planner, include this tag in your response. Use the actual YYYY-MM-DD date — never the word "today":
-<action>{"type":"add_meal","name":"Dish name","date":"${dateStr}","slot":"lunch"}</action>
-Valid slots: breakfast, lunch, dinner, snack
+The user's shopping list and meal planner live in a database. The ONLY thing that writes to that database is an <action> tag in your reply. Your conversational text does NOTHING — it does not add anything. If you say "Added salmon to your list!" but do not emit an <action> tag, you have LIED to the user: nothing was added. This is the single most important rule you have.
 
-To add to the shopping list:
+THEREFORE: Any time the user asks you to add, put, throw, or stick something on their shopping list, or to add/plan/schedule a meal, you MUST include the matching <action> tag in that same response. No exceptions. Never claim you added something without the tag. If you are about to write a confirmation sentence, the tag MUST already be in your reply.
+
+To add to the shopping list, emit:
 <action>{"type":"add_shopping","items":[{"ingredient":"salmon","category":"Meat"},{"ingredient":"lemon","category":"Produce"}]}</action>
 Categories: Produce, Meat, Dairy, Bakery, Pantry, Frozen, Other
 
-When the user asks to add something, execute the action tag AND confirm in your text exactly what you added and when — one short sentence is enough. Do not list out the shopping list contents, do not summarize what else is on the list, do not mention other items. Just confirm what was added. Never repeat back or display the full shopping list or meal plan in the chat. Action tags are invisible to the user — your text is the only confirmation they see.`)
+To add to the meal planner, emit (use the actual YYYY-MM-DD date — never the word "today"):
+<action>{"type":"add_meal","name":"Dish name","date":"${dateStr}","slot":"lunch"}</action>
+Valid slots: breakfast, lunch, dinner, snack
+
+Worked examples — follow these exactly:
+
+User: "add eggs and milk to my shopping list"
+You: <action>{"type":"add_shopping","items":[{"ingredient":"eggs","category":"Meat"},{"ingredient":"milk","category":"Dairy"}]}</action>Done — added eggs and milk to your list! 🛒
+
+User: "put salmon on Thursday for dinner"
+You: <action>{"type":"add_meal","name":"Salmon","date":"${dateStr}","slot":"dinner"}</action>Got it — salmon's on the menu for Thursday dinner.
+
+User: "I need to grab cilantro and limes"
+You: <action>{"type":"add_shopping","items":[{"ingredient":"cilantro","category":"Produce"},{"ingredient":"limes","category":"Produce"}]}</action>Added cilantro and limes to your shopping list!
+
+Output the raw <action> tag exactly as shown — never wrap it in backticks or a code block, never explain it, never describe the JSON. The tag is invisible to the user; only your sentence shows.
+
+After emitting the tag, confirm in ONE short sentence exactly what you added. Do not list out the shopping list contents, do not summarize what else is on the list, do not mention other items. Never repeat back or display the full shopping list or meal plan.`)
 
   return parts.join('\n\n')
 }
@@ -129,9 +146,13 @@ function resolveDate(dateStr) {
 async function executeActions(rawReply, userId) {
   const re = /<action>([\s\S]*?)<\/action>/g
   let match
+  let found = false
   while ((match = re.exec(rawReply)) !== null) {
+    found = true
     try {
-      const action = JSON.parse(match[1])
+      // Gemini occasionally wraps the JSON in backticks — strip them before parsing
+      const jsonStr = match[1].trim().replace(/^`+|`+$/g, '').trim()
+      const action = JSON.parse(jsonStr)
       if (action.type === 'add_meal') {
         const date = resolveDate(action.date)
         const { data: existing } = await supabase
@@ -155,7 +176,7 @@ async function executeActions(rawReply, userId) {
           })
         }
       } else if (action.type === 'add_shopping') {
-        await supabase.from('shopping_list').insert(
+        const { error } = await supabase.from('shopping_list').insert(
           (action.items ?? []).map(item => ({
             user_id: userId,
             ingredient: item.ingredient,
@@ -163,11 +184,13 @@ async function executeActions(rawReply, userId) {
             checked: false,
           }))
         )
+        if (error) console.error('[Action] shopping list insert failed:', error)
       }
     } catch (err) {
-      console.warn('[Action] failed to execute:', match[1], err)
+      console.error('[Action] failed to execute tag content:', match[1], err)
     }
   }
+  if (!found) console.log('[Action] no <action> tags found in reply:', rawReply.slice(0, 400))
 }
 
 // ─── Component ────────────────────────────────────────────

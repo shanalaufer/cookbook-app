@@ -31,6 +31,14 @@ function dietaryNote(restrictions) {
   return `\n\nDietary restrictions to always follow: ${restrictions}`
 }
 
+function cleanIngredient(str) {
+  return str.replace(/\*{1,2}([^*]*)\*{1,2}/g, '$1').replace(/\*+/g, '').trim()
+}
+
+function cleanRecipe(recipe) {
+  return { ...recipe, ingredients: (recipe.ingredients ?? []).map(cleanIngredient) }
+}
+
 function parseJSON(str, array = false) {
   const pattern = array ? /\[[\s\S]*\]/ : /\{[\s\S]*\}/
   const match = str.match(pattern)
@@ -91,7 +99,7 @@ export async function generateRecipeIdeas(query, dietaryRestrictions) {
     model.generateContent(prompt),
     'Gemini'
   )
-  return parseJSON(result.response.text(), true)
+  return parseJSON(result.response.text(), true).map(cleanRecipe)
 }
 
 // ─── Recipe extraction — text + URL (Groq) ───────────────
@@ -103,7 +111,7 @@ export async function extractRecipeFromText(rawText, dietaryRestrictions) {
     { role: 'system', content: system },
     { role: 'user',   content: prompt },
   ], 'extract recipe from text')
-  return parseJSON(raw)
+  return cleanRecipe(parseJSON(raw))
 }
 
 export async function extractRecipeFromUrl(url, pageText, dietaryRestrictions) {
@@ -114,7 +122,7 @@ export async function extractRecipeFromUrl(url, pageText, dietaryRestrictions) {
     { role: 'system', content: system },
     { role: 'user',   content: prompt },
   ], 'extract recipe from URL')
-  return parseJSON(raw)
+  return cleanRecipe(parseJSON(raw))
 }
 
 // ─── Recipe extraction — PDF via Gemini (iOS fallback) ───
@@ -132,7 +140,7 @@ export async function extractRecipeFromPdf(base64Data, dietaryRestrictions) {
     ]),
     'Gemini'
   )
-  return parseJSON(result.response.text())
+  return cleanRecipe(parseJSON(result.response.text()))
 }
 
 // ─── Recipe extraction — image (Gemini) ──────────────────
@@ -150,7 +158,7 @@ export async function extractRecipeFromImage(base64Data, mimeType, dietaryRestri
     ]),
     'Gemini'
   )
-  return parseJSON(result.response.text())
+  return cleanRecipe(parseJSON(result.response.text()))
 }
 
 // ─── Ingredient categorization (Groq) ────────────────────
