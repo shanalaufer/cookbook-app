@@ -204,7 +204,10 @@ export async function sendChatMessage(systemPrompt, history, userMessage) {
   // strictly alternate user/model — otherwise it throws. Reloaded history can
   // violate this (same-timestamp rows can come back out of order), so collapse
   // any consecutive same-role turns and drop leading model turns before sending.
+  // Only the recent conversation is sent — older turns add cost and can steer
+  // the model toward stale patterns (old action formats, old category names).
   const mapped = history
+    .slice(-40)
     .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', text: m.rawContent ?? '' }))
     .filter(m => m.text.trim())
 

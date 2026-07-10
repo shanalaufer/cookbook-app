@@ -55,6 +55,17 @@ function parseNumber(str) {
   return null
 }
 
+// Splits a full ingredient line: "2 cups flour" → { amount: "2 cups", name: "flour" }
+// Strings with no leading quantity → { amount: "", name: <original> }
+export function parseIngredient(raw) {
+  const str = (raw ?? '').trim()
+  const m = str.match(
+    /^([\d¼½¾⅓⅔⅛⅜⅝⅞][\d\s./\-–]*(?:\([^)]*\)\s*)?(?:cups?|tbsps?|tsps?|tablespoons?|teaspoons?|fl\.?\s*oz|fluid\s+oz|ounces?|oz|pounds?|lbs?|lb|grams?|g|kg|ml|liters?|l|quarts?|qt|pints?|pt|gallons?|cans?|jars?|pkgs?|packages?|cloves?|heads?|bunches?|slices?|pieces?|stalks?|sprigs?|large|medium|small|whole)?)\s+(.+)/i
+  )
+  if (m && m[2].trim()) return { amount: m[1].trim(), name: m[2].trim() }
+  return { amount: '', name: str }
+}
+
 // "2 cups" → { qty: 2, unit: 'cup', raw: '2 cups' }
 // unparseable / ranges → { qty: null, unit: null, raw }
 export function parseAmount(raw) {

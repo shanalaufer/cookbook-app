@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase'
 import { sendChatMessage } from '../lib/ai'
 import { resolveListByName } from '../lib/lists'
 import { normalizeCategory } from '../lib/categories'
+import { parseIngredient } from '../lib/quantity'
 import RecipeFullView from '../components/RecipeFullView'
 import ReactMarkdown from 'react-markdown'
 
@@ -286,7 +287,8 @@ async function executeActions(rawReply, userId, activeListId) {
           const seen = new Set()
           const dupeIds = []
           for (const row of data ?? []) {
-            const k = row.ingredient.toLowerCase().trim()
+            // Strip any embedded amount so "2 cups flour" and "flour" match
+            const k = parseIngredient(row.ingredient).name.toLowerCase().trim()
             if (seen.has(k)) dupeIds.push(row.id)
             else seen.add(k)
           }
@@ -318,14 +320,18 @@ export default function AIChat() {
   const bottomRef = useRef(null)
 
   const loadHistory = useCallback(async () => {
+    // Fetch the NEWEST 120 rows (descending), then reverse for display.
+    // Ascending+limit would return the oldest 120 ever — once the table grows
+    // past the limit, new messages save but never load, "vanishing" on reload.
     const { data } = await supabase
       .from('chat_history')
       .select('role,content')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
       .limit(120)
     setMessages(
       (data ?? [])
+        .reverse()
         .filter(m => (m.content ?? '').trim())   // skip legacy empty rows (blank bubbles / poison)
         .map(m => ({
           role: m.role === 'model' ? 'assistant' : 'user',
