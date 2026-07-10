@@ -4,11 +4,12 @@ import { supabase } from './supabase'
 // shopping page, the ingredient checklist, and the AI action executor.
 
 export async function getLists(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('shopping_lists')
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: true })
+  if (error) console.error('[Lists] getLists failed (has the migration been run?):', error.message)
   return data ?? []
 }
 

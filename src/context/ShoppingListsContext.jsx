@@ -18,6 +18,7 @@ export function ShoppingListsProvider({ children }) {
   const [lists, setLists] = useState([])
   const [activeListId, setActiveListId] = useState(null)
   const [ready, setReady] = useState(false)
+  const [error, setError] = useState(null)
 
   const refreshLists = useCallback(async () => {
     if (!user) return []
@@ -31,23 +32,31 @@ export function ShoppingListsProvider({ children }) {
   useEffect(() => {
     let cancelled = false
     async function init() {
-      if (!user) { setLists([]); setActiveListId(null); setReady(false); return }
-      let next = await getLists(user.id)
-      if (!next.length) {
-        await ensureDefaultList(user.id)
-        next = await getLists(user.id)
+      if (!user) { setLists([]); setActiveListId(null); setReady(false); setError(null); return }
+      try {
+        let next = await getLists(user.id)
+        if (!next.length) {
+          await ensureDefaultList(user.id)
+          next = await getLists(user.id)
+        }
+        const { data: pref } = await supabase
+          .from('user_preferences')
+          .select('active_list_id')
+          .eq('user_id', user.id)
+          .maybeSingle()
+        if (cancelled) return
+        setLists(next)
+        const stored = pref?.active_list_id
+        const valid = next.find(l => l.id === stored)
+        setActiveListId(valid?.id ?? (next.find(l => l.is_default) ?? next[0])?.id ?? null)
+        setError(next.length ? null : 'no-lists')
+      } catch (err) {
+        if (cancelled) return
+        console.error('[Lists] init failed:', err)
+        setError('init-failed')
+      } finally {
+        if (!cancelled) setReady(true)
       }
-      const { data: pref } = await supabase
-        .from('user_preferences')
-        .select('active_list_id')
-        .eq('user_id', user.id)
-        .maybeSingle()
-      if (cancelled) return
-      setLists(next)
-      const stored = pref?.active_list_id
-      const valid = next.find(l => l.id === stored)
-      setActiveListId(valid?.id ?? (next.find(l => l.is_default) ?? next[0])?.id ?? null)
-      setReady(true)
     }
     init()
     return () => { cancelled = true }
@@ -63,7 +72,7 @@ export function ShoppingListsProvider({ children }) {
 
   return (
     <ShoppingListsContext.Provider
-      value={{ lists, activeListId, setActiveList, refreshLists, ready }}
+      value={{ lists, activeListId, setActiveList, refreshLists, ready, error }}
     >
       {children}
     </ShoppingListsContext.Provider>

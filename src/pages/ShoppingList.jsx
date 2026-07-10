@@ -44,7 +44,7 @@ function groupItems(items) {
 
 export default function ShoppingList() {
   const { user } = useAuth()
-  const { lists, activeListId, setActiveList, refreshLists } = useShoppingLists()
+  const { lists, activeListId, setActiveList, refreshLists, ready, error } = useShoppingLists()
   const [items, setItems] = useState([])
   const [manualInput, setManualInput] = useState('')
   const [manualCategory, setManualCategory] = useState('Other')
@@ -74,21 +74,23 @@ export default function ShoppingList() {
   }, [user.id])
 
   const load = useCallback(async () => {
-    if (!activeListId) return
+    if (!activeListId) { setItems([]); setLoading(false); return }
     setLoading(true)
-    const { data } = await supabase
+    const { data, error: qErr } = await supabase
       .from('shopping_list')
       .select('*')
       .eq('user_id', user.id)
       .eq('list_id', activeListId)
       .order('created_at', { ascending: true })
+    if (qErr) console.error('[Shopping] load failed (has the migration been run?):', qErr.message)
     const rows = data ?? []
     setItems(rows)
     setLoading(false)
     recategorizeUnknowns(rows)
   }, [user.id, activeListId, recategorizeUnknowns])
 
-  useEffect(() => { load() }, [load])
+  // Wait for the lists context before querying — avoids a null-list hang
+  useEffect(() => { if (ready) load() }, [ready, load])
 
   async function toggleItem(group) {
     const newChecked = !group.checked
@@ -253,9 +255,17 @@ export default function ShoppingList() {
         <button type="submit">Add</button>
       </form>
 
-      {loading && <div className="loading-state"><div className="spinner" /></div>}
+      {(!ready || loading) && !error && <div className="loading-state"><div className="spinner" /></div>}
 
-      {!loading && items.length === 0 && (
+      {error && (
+        <div className="empty-state">
+          <div className="empty-icon">⚠️</div>
+          <p>Couldn't load your shopping lists</p>
+          <p className="hint">Make sure the database migration has been run in Supabase, then reload. Check the browser console for details.</p>
+        </div>
+      )}
+
+      {ready && !error && !loading && items.length === 0 && (
         <div className="empty-state">
           <div className="empty-icon">🛒</div>
           <p>This list is empty</p>
