@@ -6,6 +6,7 @@ import { sendChatMessage } from '../lib/ai'
 import { resolveListByName } from '../lib/lists'
 import { normalizeCategory } from '../lib/categories'
 import { parseIngredient } from '../lib/quantity'
+import { getCategoryOverrides, rememberCategory } from '../lib/categorize'
 import RecipeFullView from '../components/RecipeFullView'
 import ReactMarkdown from 'react-markdown'
 
@@ -62,6 +63,9 @@ Categories: Protein, Leafy Greens, Vegetables, Fruit, Fresh Herbs, Healthy Fats,
 To remove items from a shopping list, emit (just the ingredient names):
 <action>{"type":"remove_shopping","list":"Costco","items":["salmon","lemon"]}</action>
 
+To change an item's category (also remembered for all future lists):
+<action>{"type":"set_category","ingredient":"tahini","category":"Healthy Fats"}</action>
+
 To remove duplicate items from a list (keeps one of each ingredient):
 <action>{"type":"dedupe_shopping","list":"Costco"}</action>
 
@@ -94,6 +98,9 @@ You: <action>{"type":"move_checked","to":"Week 2"}</action>Moved your checked it
 User: "delete the duplicates on my list" / "remove duplicate items"
 You: <action>{"type":"dedupe_shopping"}</action>Cleaned up the duplicates on your list! ✅
 
+User: "move tahini to healthy fats" / "tahini isn't pantry, it's a healthy fat"
+You: <action>{"type":"set_category","ingredient":"tahini","category":"Healthy Fats"}</action>Moved tahini to Healthy Fats — I'll remember that from now on.
+
 User: "put salmon on Thursday for dinner"
 You: <action>{"type":"add_meal","name":"Salmon","date":"${dateStr}","slot":"dinner"}</action>Got it — salmon's on the menu for Thursday dinner.
 
@@ -101,6 +108,8 @@ User: "take eggs off my list" / "I already have salmon"
 You: <action>{"type":"remove_shopping","items":["eggs"]}</action>Done — removed that from your shopping list!
 
 Output the raw <action> tag exactly as shown — never wrap it in backticks or a code block, never explain it, never describe the JSON. The tag is invisible to the user; only your sentence shows.
+
+Emit ONLY the action type that matches the request — never substitute a different action because none fits. If no action can do what the user asked, say you can't do that yet instead of emitting a tag. Your confirmation sentence must describe what your tag actually did — never reuse a confirmation sentence from an unrelated example.
 
 After emitting the tag, confirm in ONE short sentence exactly what you added. Do not list out the shopping list contents, do not summarize what else is on the list, do not mention other items. Never repeat back or display the full shopping list or meal plan.`)
 
@@ -185,6 +194,38 @@ function resolveDate(dateStr) {
   return dateStr
 }
 
+// Insert items into a list: the user's remembered category overrides beat the
+// model's guess, and ingredients already on the list are skipped so repeated
+// asks never pile up duplicates (batch-internal dupes are skipped too).
+async function insertShoppingItems(userId, listId, items) {
+  const clean = (items ?? []).filter(i => i?.ingredient?.trim())
+  if (!clean.length || !listId) return
+  const overrides = await getCategoryOverrides(userId, clean.map(i => i.ingredient))
+  const { data: existing } = await supabase
+    .from('shopping_list')
+    .select('ingredient')
+    .eq('user_id', userId)
+    .eq('list_id', listId)
+  const have = new Set((existing ?? []).map(r => parseIngredient(r.ingredient).name.toLowerCase().trim()))
+  const rows = []
+  for (const item of clean) {
+    const key = parseIngredient(item.ingredient).name.toLowerCase().trim()
+    if (have.has(key)) continue
+    have.add(key)
+    rows.push({
+      user_id: userId,
+      list_id: listId,
+      ingredient: item.ingredient.trim(),
+      amount: item.amount || null,
+      category: overrides[key] ?? normalizeCategory(item.category),
+      checked: false,
+    })
+  }
+  if (!rows.length) return
+  const { error } = await supabase.from('shopping_list').insert(rows)
+  if (error) console.error('[Action] shopping list insert failed:', error)
+}
+
 // Executes embedded <action> tags. activeListId is the fallback list when the
 // model doesn't name one. Returns true if any shopping list was created/changed
 // so the caller can refresh the list switcher.
@@ -224,17 +265,7 @@ async function executeActions(rawReply, userId, activeListId) {
       } else if (action.type === 'add_shopping') {
         const listId = await resolveListByName(userId, action.list, { create: true, fallbackListId: activeListId })
         if (action.list) listsChanged = true   // a named list may have just been created
-        const { error } = await supabase.from('shopping_list').insert(
-          (action.items ?? []).map(item => ({
-            user_id: userId,
-            list_id: listId,
-            ingredient: item.ingredient,
-            amount: item.amount || null,
-            category: normalizeCategory(item.category),
-            checked: false,
-          }))
-        )
-        if (error) console.error('[Action] shopping list insert failed:', error)
+        await insertShoppingItems(userId, listId, action.items)
       } else if (action.type === 'remove_shopping') {
         const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
         for (const entry of action.items ?? []) {
@@ -246,21 +277,9 @@ async function executeActions(rawReply, userId, activeListId) {
           if (error) console.error('[Action] shopping list delete failed:', error)
         }
       } else if (action.type === 'create_list') {
-        await resolveListByName(userId, action.name, { create: true })
+        const listId = await resolveListByName(userId, action.name, { create: true })
         listsChanged = true
-        if (action.items?.length) {
-          const listId = await resolveListByName(userId, action.name, { create: true })
-          await supabase.from('shopping_list').insert(
-            action.items.map(item => ({
-              user_id: userId,
-              list_id: listId,
-              ingredient: item.ingredient,
-              amount: item.amount || null,
-              category: normalizeCategory(item.category),
-              checked: false,
-            }))
-          )
-        }
+        if (action.items?.length) await insertShoppingItems(userId, listId, action.items)
       } else if (action.type === 'move_checked') {
         const target = await resolveListByName(userId, action.to, { create: true })
         if (target && activeListId) {
@@ -272,6 +291,28 @@ async function executeActions(rawReply, userId, activeListId) {
             .eq('checked', true)
           if (error) console.error('[Action] move_checked failed:', error)
           else listsChanged = true
+        }
+      } else if (action.type === 'set_category') {
+        // Change item(s) category on a list AND remember the choice for the future
+        const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
+        const changes = action.items ?? [{ ingredient: action.ingredient, category: action.category }]
+        const { data: rows } = listId
+          ? await supabase.from('shopping_list').select('id,ingredient').eq('user_id', userId).eq('list_id', listId)
+          : { data: [] }
+        for (const ch of changes) {
+          const name = (ch?.ingredient ?? '').trim()
+          if (!name) continue
+          const category = normalizeCategory(ch?.category)
+          const target = parseIngredient(name).name.toLowerCase().trim()
+          const ids = (rows ?? [])
+            .filter(r => parseIngredient(r.ingredient).name.toLowerCase().trim() === target)
+            .map(r => r.id)
+          if (ids.length) {
+            const { error } = await supabase.from('shopping_list').update({ category }).in('id', ids)
+            if (error) console.error('[Action] set_category failed:', error)
+          }
+          // Remember even if no row matched right now — future adds will use it
+          await rememberCategory(userId, target, category)
         }
       } else if (action.type === 'dedupe_shopping') {
         // Deterministically drop duplicate rows on a list — keep the earliest of
