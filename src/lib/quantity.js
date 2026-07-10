@@ -66,6 +66,50 @@ export function parseIngredient(raw) {
   return { amount: '', name: str }
 }
 
+// Fold simple English plurals so "avocados" ≈ "avocado", "berries" ≈ "berry",
+// "tomatoes" ≈ "tomato". Keys are for comparison only — never displayed — so
+// occasional imperfect stems (e.g. "hummus" → "hummu") are harmless: identical
+// inputs always produce identical keys.
+function singularize(word) {
+  if (word.length <= 3) return word
+  if (word.endsWith('ies')) return word.slice(0, -3) + 'y'
+  if (word.endsWith('oes')) return word.slice(0, -2)
+  if (word.endsWith('ss')) return word
+  if (word.endsWith('s')) return word.slice(0, -1)
+  return word
+}
+
+// Prep/descriptor words that don't change WHAT the ingredient is — safe to
+// ignore when comparing. Meaningful qualifiers (ground, dried, canned, frozen,
+// smoked…) are deliberately NOT here: "ground beef" ≠ "beef".
+const DESCRIPTOR_WORDS = new Set([
+  'diced', 'chopped', 'minced', 'sliced', 'peeled', 'grated', 'shredded',
+  'cubed', 'trimmed', 'ripe', 'fresh', 'organic', 'raw', 'large', 'medium',
+  'small', 'extra', 'boneless', 'skinless', 'finely', 'thinly', 'roughly',
+  'optional', 'divided', 'washed', 'halved', 'quartered',
+])
+
+// Normalize an ingredient string to a comparison key:
+// - strips any leading amount ("2 cups …")
+// - drops parentheticals and anything after a comma ("avocado (ripe), diced")
+// - lowercases, folds plurals, ignores prep descriptors
+// so "avocados", "Avocado, diced", and "2 ripe avocados" all match.
+// Keys are for matching only — never displayed.
+export function ingredientKey(raw) {
+  let name = parseIngredient(raw).name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')   // drop parentheticals
+    .split(',')[0]                // drop trailing context after a comma
+    .trim()
+  const words = name
+    .split(/\s+/)
+    .filter(w => w && !DESCRIPTOR_WORDS.has(w))
+    .map(singularize)
+  // If everything was descriptors, fall back to the plain folded name
+  if (!words.length) return name.split(/\s+/).map(singularize).join(' ')
+  return words.join(' ')
+}
+
 // "2 cups" → { qty: 2, unit: 'cup', raw: '2 cups' }
 // unparseable / ranges → { qty: null, unit: null, raw }
 export function parseAmount(raw) {

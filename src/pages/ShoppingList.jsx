@@ -6,14 +6,15 @@ import { supabase } from '../lib/supabase'
 import { CATEGORY_ICONS, CATEGORY_ORDER, CATEGORY_SET, sortCategories } from '../lib/categories'
 import { createList, renameList, duplicateList, deleteList } from '../lib/lists'
 import { categorizeWithOverrides, rememberCategory } from '../lib/categorize'
-import { mergeAmounts } from '../lib/quantity'
+import { mergeAmounts, ingredientKey } from '../lib/quantity'
 
 function groupItems(items) {
   const merged = {}
   for (const item of items) {
-    // Manual items (no recipe source) never merge — each gets its own row
+    // Manual items (no recipe source) never merge — each gets its own row.
+    // Recipe items merge on the normalized key so "avocado" ≈ "avocados, diced".
     const key = item.recipe_name
-      ? `${item.category}|||${item.ingredient.toLowerCase().trim()}`
+      ? `${item.category}|||${ingredientKey(item.ingredient)}`
       : `manual|||${item.id}`
     if (merged[key]) {
       if (item.recipe_name && !merged[key].recipe_names.includes(item.recipe_name)) {

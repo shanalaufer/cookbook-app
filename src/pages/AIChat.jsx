@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import { sendChatMessage } from '../lib/ai'
 import { resolveListByName } from '../lib/lists'
 import { normalizeCategory } from '../lib/categories'
-import { parseIngredient } from '../lib/quantity'
+import { ingredientKey } from '../lib/quantity'
 import { getCategoryOverrides, rememberCategory } from '../lib/categorize'
 import RecipeFullView from '../components/RecipeFullView'
 import ReactMarkdown from 'react-markdown'
@@ -206,10 +206,10 @@ async function insertShoppingItems(userId, listId, items) {
     .select('ingredient')
     .eq('user_id', userId)
     .eq('list_id', listId)
-  const have = new Set((existing ?? []).map(r => parseIngredient(r.ingredient).name.toLowerCase().trim()))
+  const have = new Set((existing ?? []).map(r => ingredientKey(r.ingredient)))
   const rows = []
   for (const item of clean) {
-    const key = parseIngredient(item.ingredient).name.toLowerCase().trim()
+    const key = ingredientKey(item.ingredient)
     if (have.has(key)) continue
     have.add(key)
     rows.push({
@@ -217,7 +217,7 @@ async function insertShoppingItems(userId, listId, items) {
       list_id: listId,
       ingredient: item.ingredient.trim(),
       amount: item.amount || null,
-      category: overrides[key] ?? normalizeCategory(item.category),
+      category: overrides[key] ?? overrides[item.ingredient.toLowerCase().trim()] ?? normalizeCategory(item.category),
       checked: false,
     })
   }
@@ -267,13 +267,18 @@ async function executeActions(rawReply, userId, activeListId) {
         if (action.list) listsChanged = true   // a named list may have just been created
         await insertShoppingItems(userId, listId, action.items)
       } else if (action.type === 'remove_shopping') {
+        // Fetch then match by normalized key so "avocados" removes "avocado, diced"
         const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
+        let q = supabase.from('shopping_list').select('id,ingredient').eq('user_id', userId)
+        if (listId) q = q.eq('list_id', listId)
+        const { data: rows } = await q
         for (const entry of action.items ?? []) {
           const name = (typeof entry === 'string' ? entry : entry?.ingredient)?.trim()
           if (!name) continue
-          let q = supabase.from('shopping_list').delete().eq('user_id', userId).ilike('ingredient', name)
-          if (listId) q = q.eq('list_id', listId)
-          const { error } = await q
+          const target = ingredientKey(name)
+          const ids = (rows ?? []).filter(r => ingredientKey(r.ingredient) === target).map(r => r.id)
+          if (!ids.length) continue
+          const { error } = await supabase.from('shopping_list').delete().in('id', ids)
           if (error) console.error('[Action] shopping list delete failed:', error)
         }
       } else if (action.type === 'create_list') {
@@ -303,9 +308,9 @@ async function executeActions(rawReply, userId, activeListId) {
           const name = (ch?.ingredient ?? '').trim()
           if (!name) continue
           const category = normalizeCategory(ch?.category)
-          const target = parseIngredient(name).name.toLowerCase().trim()
+          const target = ingredientKey(name)
           const ids = (rows ?? [])
-            .filter(r => parseIngredient(r.ingredient).name.toLowerCase().trim() === target)
+            .filter(r => ingredientKey(r.ingredient) === target)
             .map(r => r.id)
           if (ids.length) {
             const { error } = await supabase.from('shopping_list').update({ category }).in('id', ids)
@@ -328,8 +333,9 @@ async function executeActions(rawReply, userId, activeListId) {
           const seen = new Set()
           const dupeIds = []
           for (const row of data ?? []) {
-            // Strip any embedded amount so "2 cups flour" and "flour" match
-            const k = parseIngredient(row.ingredient).name.toLowerCase().trim()
+            // Normalized key: amounts stripped, plurals folded, prep words and
+            // trailing context ignored — "avocados" ≈ "avocado, diced"
+            const k = ingredientKey(row.ingredient)
             if (seen.has(k)) dupeIds.push(row.id)
             else seen.add(k)
           }
