@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { ShoppingListsProvider } from './context/ShoppingListsContext'
 import Auth from './pages/Auth'
 import Cookbook from './pages/Cookbook'
 import ShoppingList from './pages/ShoppingList'
@@ -59,7 +60,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <ShoppingListsProvider>
+          <AppRoutes />
+        </ShoppingListsProvider>
       </AuthProvider>
     </BrowserRouter>
   )

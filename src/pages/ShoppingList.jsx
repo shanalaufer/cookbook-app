@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
+import { useShoppingLists } from '../context/ShoppingListsContext'
 import { supabase } from '../lib/supabase'
-
-const CATEGORY_ORDER = ['Produce', 'Meat', 'Dairy', 'Bakery', 'Pantry', 'Frozen', 'Other']
-const CATEGORY_ICONS = {
-  Produce: '🥬', Meat: '🥩', Dairy: '🧀', Bakery: '🍞',
-  Pantry: '🫙', Frozen: '🧊', Other: '🛒',
-}
+import { CATEGORY_ICONS, CATEGORY_ORDER, CATEGORY_SET, sortCategories } from '../lib/categories'
+import { createList, renameList, duplicateList, deleteList } from '../lib/lists'
+import { categorizeWithOverrides, rememberCategory } from '../lib/categorize'
+import { mergeAmounts } from '../lib/quantity'
 
 function groupItems(items) {
   const merged = {}
@@ -20,12 +19,16 @@ function groupItems(items) {
       if (item.recipe_name && !merged[key].recipe_names.includes(item.recipe_name)) {
         merged[key].recipe_names.push(item.recipe_name)
       }
+      if (item.amount && !merged[key].amounts.includes(item.amount)) {
+        merged[key].amounts.push(item.amount)
+      }
       merged[key].ids.push(item.id)
       if (!item.checked) merged[key].checked = false
     } else {
       merged[key] = {
         ...item,
         recipe_names: item.recipe_name ? [item.recipe_name] : [],
+        amounts: item.amount ? [item.amount] : [],
         ids: [item.id],
       }
     }
@@ -41,23 +44,49 @@ function groupItems(items) {
 
 export default function ShoppingList() {
   const { user } = useAuth()
+  const { lists, activeListId, setActiveList, refreshLists } = useShoppingLists()
   const [items, setItems] = useState([])
   const [manualInput, setManualInput] = useState('')
-  const [manualCategory, setManualCategory] = useState('Produce')
+  const [manualCategory, setManualCategory] = useState('Other')
   const [loading, setLoading] = useState(true)
   const [editingItem, setEditingItem] = useState(null)
   const [editName, setEditName] = useState('')
-  const [editCategory, setEditCategory] = useState('Produce')
+  const [editCategory, setEditCategory] = useState('Other')
+  const [showListMenu, setShowListMenu] = useState(false)
+
+  const activeList = lists.find(l => l.id === activeListId) ?? null
+
+  // One-time cleanup: items carrying a legacy/unknown category (e.g. from before
+  // the 12-category scheme) get re-sorted via the override-aware categorizer.
+  const recategorizeUnknowns = useCallback(async (rows) => {
+    const stale = rows.filter(i => !CATEGORY_SET.has(i.category))
+    if (!stale.length) return
+    const cats = await categorizeWithOverrides(user.id, stale.map(i => i.ingredient))
+    const updates = stale
+      .map(i => ({ id: i.id, category: cats[i.ingredient] }))
+      .filter(u => u.category && u.category !== 'Other')
+    if (!updates.length) return
+    await Promise.all(
+      updates.map(u => supabase.from('shopping_list').update({ category: u.category }).eq('id', u.id))
+    )
+    const byId = Object.fromEntries(updates.map(u => [u.id, u.category]))
+    setItems(prev => prev.map(i => byId[i.id] ? { ...i, category: byId[i.id] } : i))
+  }, [user.id])
 
   const load = useCallback(async () => {
+    if (!activeListId) return
+    setLoading(true)
     const { data } = await supabase
       .from('shopping_list')
       .select('*')
       .eq('user_id', user.id)
+      .eq('list_id', activeListId)
       .order('created_at', { ascending: true })
-    setItems(data ?? [])
+    const rows = data ?? []
+    setItems(rows)
     setLoading(false)
-  }, [user.id])
+    recategorizeUnknowns(rows)
+  }, [user.id, activeListId, recategorizeUnknowns])
 
   useEffect(() => { load() }, [load])
 
@@ -105,6 +134,10 @@ export default function ShoppingList() {
     setItems(prev => prev.map(i =>
       editingItem.ids.includes(i.id) ? { ...i, ingredient: name, category: editCategory } : i
     ))
+    // Remember this categorization so the same ingredient lands here next time
+    if (editCategory !== editingItem.category || name !== editingItem.ingredient) {
+      rememberCategory(user.id, name, editCategory)
+    }
     setEditingItem(null)
   }
 
@@ -115,19 +148,63 @@ export default function ShoppingList() {
 
   async function addManual(e) {
     e.preventDefault()
-    if (!manualInput.trim()) return
+    if (!manualInput.trim() || !activeListId) return
     const { data } = await supabase
       .from('shopping_list')
-      .insert({ user_id: user.id, ingredient: manualInput.trim(), category: manualCategory, checked: false })
+      .insert({
+        user_id: user.id,
+        list_id: activeListId,
+        ingredient: manualInput.trim(),
+        category: manualCategory,
+        checked: false,
+      })
       .select()
       .single()
     if (data) setItems(prev => [...prev, data])
     setManualInput('')
   }
 
+  // ─── List management ─────────────────────────────────────
+  async function handleNewList() {
+    const name = prompt('Name your new list:')?.trim()
+    if (!name) return
+    const list = await createList(user.id, name)
+    await refreshLists()
+    setActiveList(list.id)
+    setShowListMenu(false)
+  }
+
+  async function handleRenameList() {
+    const name = prompt('Rename list:', activeList?.name)?.trim()
+    if (!name || !activeList) return
+    await renameList(activeList.id, name)
+    await refreshLists()
+    setShowListMenu(false)
+  }
+
+  async function handleDuplicateList() {
+    if (!activeList) return
+    const name = prompt('Name for the copy:', `${activeList.name} copy`)?.trim()
+    if (!name) return
+    const list = await duplicateList(user.id, activeList.id, name)
+    await refreshLists()
+    setActiveList(list.id)
+    setShowListMenu(false)
+  }
+
+  async function handleDeleteList() {
+    if (!activeList) return
+    if (lists.length <= 1) { alert("You can't delete your only list."); return }
+    if (!confirm(`Delete "${activeList.name}" and all its items?`)) return
+    await deleteList(activeList.id)
+    const remaining = await refreshLists()
+    setActiveList((remaining.find(l => l.is_default) ?? remaining[0])?.id ?? null)
+    setShowListMenu(false)
+  }
+
   const groups = groupItems(items)
   const checkedCount = items.filter(i => i.checked).length
-  const sortedCategories = CATEGORY_ORDER.filter(c => groups[c])
+  const sortedCategories = sortCategories(Object.keys(groups))
 
   return (
     <div className="page">
@@ -141,6 +218,21 @@ export default function ShoppingList() {
             Clear {checkedCount} checked
           </button>
         )}
+      </div>
+
+      <div className="list-switcher">
+        <select
+          className="list-switcher-select"
+          value={activeListId ?? ''}
+          onChange={e => setActiveList(e.target.value)}
+        >
+          {lists.map(l => (
+            <option key={l.id} value={l.id}>{l.name}</option>
+          ))}
+        </select>
+        <button className="list-switcher-menu-btn" onClick={() => setShowListMenu(true)} aria-label="Manage lists">
+          ⋯
+        </button>
       </div>
 
       <form className="manual-add-form" onSubmit={addManual}>
@@ -166,7 +258,7 @@ export default function ShoppingList() {
       {!loading && items.length === 0 && (
         <div className="empty-state">
           <div className="empty-icon">🛒</div>
-          <p>Your shopping list is empty</p>
+          <p>This list is empty</p>
           <p className="hint">Add ingredients from any recipe, or type items above</p>
         </div>
       )}
@@ -174,7 +266,7 @@ export default function ShoppingList() {
       {sortedCategories.map(category => (
         <div key={category} className="category-group">
           <div className="category-title">
-            {CATEGORY_ICONS[category]} {category}
+            {CATEGORY_ICONS[category] ?? '📦'} {category}
           </div>
           {groups[category].map((group, i) => (
             <div
@@ -189,9 +281,12 @@ export default function ShoppingList() {
                 onClick={e => e.stopPropagation()}
               />
               <div className="shopping-item-text">
-                <div className="shopping-ingredient">{group.ingredient}</div>
+                <div className="shopping-ingredient">
+                  {(() => { const a = mergeAmounts(group.amounts); return a && <span className="shopping-amount">{a} </span> })()}
+                  {group.ingredient}
+                </div>
                 {group.recipe_names.length > 0 && (
-                  <div className="shopping-recipe">({group.recipe_names.join(', ')})</div>
+                  <div className="shopping-recipe">Used in: {group.recipe_names.join(', ')}</div>
                 )}
               </div>
               <div className="shopping-item-actions">
@@ -210,6 +305,23 @@ export default function ShoppingList() {
           ))}
         </div>
       ))}
+
+      {showListMenu && createPortal(
+        <div className="modal-overlay" onClick={() => setShowListMenu(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowListMenu(false)}>✕</button>
+            <h3 className="modal-title">Manage Lists</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+              <button className="btn-secondary" onClick={handleNewList}>➕ New list</button>
+              <button className="btn-ghost" onClick={handleRenameList}>✏️ Rename “{activeList?.name}”</button>
+              <button className="btn-ghost" onClick={handleDuplicateList}>📄 Duplicate “{activeList?.name}”</button>
+              <button className="btn-danger" onClick={handleDeleteList}>🗑 Delete “{activeList?.name}”</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {editingItem && createPortal(
         <div className="modal-overlay" onClick={() => setEditingItem(null)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>

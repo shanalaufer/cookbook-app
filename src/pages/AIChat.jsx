@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { useShoppingLists } from '../context/ShoppingListsContext'
 import { supabase } from '../lib/supabase'
 import { sendChatMessage } from '../lib/ai'
+import { resolveListByName } from '../lib/lists'
+import { normalizeCategory } from '../lib/categories'
 import RecipeFullView from '../components/RecipeFullView'
 import ReactMarkdown from 'react-markdown'
 
 // ─── System prompt ────────────────────────────────────────
 
-function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory) {
+function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory, listContext, plannerContext) {
   const today = new Date()
   const dateStr = today.toISOString().slice(0, 10)
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' })
@@ -23,6 +26,10 @@ Today is ${dayName}, ${dateStr}.`,
     parts.push(`Here are the recipes they've saved in their cookbook:\n${cookbookContext}`)
   if (shoppingHistory)
     parts.push(`Their past shopping trips (so you know what they usually buy):\n${shoppingHistory}`)
+  if (listContext)
+    parts.push(listContext)
+  if (plannerContext)
+    parts.push(`Their meal planner (so you can turn planned meals into shopping items):\n${plannerContext}`)
 
   parts.push(`RESPONSE RULES — follow these exactly:
 
@@ -43,24 +50,46 @@ The user's shopping list and meal planner live in a database. The ONLY thing tha
 
 THEREFORE: Any time the user asks you to add, put, throw, or stick something on their shopping list, or to add/plan/schedule a meal, you MUST include the matching <action> tag in that same response. No exceptions. Never claim you added something without the tag. If you are about to write a confirmation sentence, the tag MUST already be in your reply.
 
-To add to the shopping list, emit:
-<action>{"type":"add_shopping","items":[{"ingredient":"salmon","category":"Meat"},{"ingredient":"lemon","category":"Produce"}]}</action>
-Categories: Produce, Meat, Dairy, Bakery, Pantry, Frozen, Other
+Shopping actions take an optional "list" — the name of the list to act on. Match it to one of the user's existing lists shown above; omit it (or use the active list's name) when they don't specify. A list named in "list"/"to"/"create_list" that doesn't exist yet is created automatically.
+
+To add to a shopping list, emit:
+<action>{"type":"add_shopping","list":"Costco","items":[{"ingredient":"salmon","category":"Protein"},{"ingredient":"lemon","category":"Fruit"}]}</action>
+Categories: Protein, Leafy Greens, Vegetables, Fruit, Fresh Herbs, Healthy Fats, Refrigerated, Pantry, Spices & Seasonings, Frozen, Supplements, Other
+
+To remove items from a shopping list, emit (just the ingredient names):
+<action>{"type":"remove_shopping","list":"Costco","items":["salmon","lemon"]}</action>
+
+To create a new shopping list:
+<action>{"type":"create_list","name":"Phase 1"}</action>
+
+To move the checked-off items from the active list into another list:
+<action>{"type":"move_checked","to":"Week 2"}</action>
 
 To add to the meal planner, emit (use the actual YYYY-MM-DD date — never the word "today"):
 <action>{"type":"add_meal","name":"Dish name","date":"${dateStr}","slot":"lunch"}</action>
 Valid slots: breakfast, lunch, dinner, snack
 
+When the user asks to add planned meals to a list ("add this week's dinners to Costco"), look up those meals in their meal planner above, find each recipe's ingredients in their cookbook, and emit a single add_shopping with all those ingredients and the target list.
+
 Worked examples — follow these exactly:
 
 User: "add eggs and milk to my shopping list"
-You: <action>{"type":"add_shopping","items":[{"ingredient":"eggs","category":"Meat"},{"ingredient":"milk","category":"Dairy"}]}</action>Done — added eggs and milk to your list! 🛒
+You: <action>{"type":"add_shopping","items":[{"ingredient":"eggs","category":"Protein"},{"ingredient":"milk","category":"Refrigerated"}]}</action>Done — added eggs and milk to your list! 🛒
+
+User: "add the ingredients from Dalia's Mayo to Costco"
+You: <action>{"type":"add_shopping","list":"Costco","items":[{"ingredient":"eggs","category":"Protein"},{"ingredient":"lemon juice","category":"Fruit"},{"ingredient":"oil","category":"Healthy Fats"}]}</action>Added Dalia's Mayo ingredients to your Costco list!
+
+User: "create a shopping list for Phase 1"
+You: <action>{"type":"create_list","name":"Phase 1"}</action>Created your Phase 1 list! 📝
+
+User: "move the checked items into a new list called Week 2"
+You: <action>{"type":"move_checked","to":"Week 2"}</action>Moved your checked items over to Week 2.
 
 User: "put salmon on Thursday for dinner"
 You: <action>{"type":"add_meal","name":"Salmon","date":"${dateStr}","slot":"dinner"}</action>Got it — salmon's on the menu for Thursday dinner.
 
-User: "I need to grab cilantro and limes"
-You: <action>{"type":"add_shopping","items":[{"ingredient":"cilantro","category":"Produce"},{"ingredient":"limes","category":"Produce"}]}</action>Added cilantro and limes to your shopping list!
+User: "take eggs off my list" / "I already have salmon"
+You: <action>{"type":"remove_shopping","items":["eggs"]}</action>Done — removed that from your shopping list!
 
 Output the raw <action> tag exactly as shown — never wrap it in backticks or a code block, never explain it, never describe the JSON. The tag is invisible to the user; only your sentence shows.
 
@@ -77,6 +106,10 @@ function needsCookbookContext(text) {
 
 function needsShoppingContext(text) {
   return /shop|buy|bought|groceri|ingredient|list|store|purchase|usually (buy|get)|do i have|missing/i.test(text)
+}
+
+function needsPlannerContext(text) {
+  return /planner|planned|meal plan|this week|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekday|dinners?|lunches|breakfasts/i.test(text)
 }
 
 // ─── Response parsing ─────────────────────────────────────
@@ -143,10 +176,14 @@ function resolveDate(dateStr) {
   return dateStr
 }
 
-async function executeActions(rawReply, userId) {
+// Executes embedded <action> tags. activeListId is the fallback list when the
+// model doesn't name one. Returns true if any shopping list was created/changed
+// so the caller can refresh the list switcher.
+async function executeActions(rawReply, userId, activeListId) {
   const re = /<action>([\s\S]*?)<\/action>/g
   let match
   let found = false
+  let listsChanged = false
   while ((match = re.exec(rawReply)) !== null) {
     found = true
     try {
@@ -176,27 +213,71 @@ async function executeActions(rawReply, userId) {
           })
         }
       } else if (action.type === 'add_shopping') {
+        const listId = await resolveListByName(userId, action.list, { create: true, fallbackListId: activeListId })
+        if (action.list) listsChanged = true   // a named list may have just been created
         const { error } = await supabase.from('shopping_list').insert(
           (action.items ?? []).map(item => ({
             user_id: userId,
+            list_id: listId,
             ingredient: item.ingredient,
-            category: item.category ?? 'Other',
+            amount: item.amount || null,
+            category: normalizeCategory(item.category),
             checked: false,
           }))
         )
         if (error) console.error('[Action] shopping list insert failed:', error)
+      } else if (action.type === 'remove_shopping') {
+        const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
+        for (const entry of action.items ?? []) {
+          const name = (typeof entry === 'string' ? entry : entry?.ingredient)?.trim()
+          if (!name) continue
+          let q = supabase.from('shopping_list').delete().eq('user_id', userId).ilike('ingredient', name)
+          if (listId) q = q.eq('list_id', listId)
+          const { error } = await q
+          if (error) console.error('[Action] shopping list delete failed:', error)
+        }
+      } else if (action.type === 'create_list') {
+        await resolveListByName(userId, action.name, { create: true })
+        listsChanged = true
+        if (action.items?.length) {
+          const listId = await resolveListByName(userId, action.name, { create: true })
+          await supabase.from('shopping_list').insert(
+            action.items.map(item => ({
+              user_id: userId,
+              list_id: listId,
+              ingredient: item.ingredient,
+              amount: item.amount || null,
+              category: normalizeCategory(item.category),
+              checked: false,
+            }))
+          )
+        }
+      } else if (action.type === 'move_checked') {
+        const target = await resolveListByName(userId, action.to, { create: true })
+        if (target && activeListId) {
+          const { error } = await supabase
+            .from('shopping_list')
+            .update({ list_id: target, checked: false })
+            .eq('user_id', userId)
+            .eq('list_id', activeListId)
+            .eq('checked', true)
+          if (error) console.error('[Action] move_checked failed:', error)
+          else listsChanged = true
+        }
       }
     } catch (err) {
       console.error('[Action] failed to execute tag content:', match[1], err)
     }
   }
   if (!found) console.log('[Action] no <action> tags found in reply:', rawReply.slice(0, 400))
+  return listsChanged
 }
 
 // ─── Component ────────────────────────────────────────────
 
 export default function AIChat() {
   const { user, preferences } = useAuth()
+  const { lists, activeListId, refreshLists } = useShoppingLists()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -259,6 +340,33 @@ export default function AIChat() {
       .join('\n')
   }
 
+  // Current + next two weeks of planner entries, so the AI can expand
+  // "add this week's dinners to X" into ingredients via the cookbook context.
+  async function getPlannerContext() {
+    const start = new Date().toISOString().slice(0, 10)
+    const endDate = new Date(); endDate.setDate(endDate.getDate() + 14)
+    const end = endDate.toISOString().slice(0, 10)
+    const { data } = await supabase
+      .from('meal_plan')
+      .select('date,meal_slot,custom_text,recipes(title)')
+      .eq('user_id', user.id)
+      .gte('date', start)
+      .lte('date', end)
+      .order('date', { ascending: true })
+    if (!data?.length) return null
+    return data
+      .map(r => `${r.date} ${r.meal_slot}: ${r.recipes?.title ?? r.custom_text ?? ''}`.trim())
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  function buildListContext() {
+    if (!lists.length) return null
+    const active = lists.find(l => l.id === activeListId)
+    return `The user's shopping lists: ${lists.map(l => l.name).join(', ')}.` +
+      (active ? ` The active list is "${active.name}" — use it when they don't name one.` : '')
+  }
+
   async function sendMessage(e) {
     e.preventDefault()
     const text = input.trim()
@@ -270,25 +378,35 @@ export default function AIChat() {
     setLoading(true)
 
     try {
-      const [cookbookContext, shoppingHistory] = await Promise.all([
+      const [cookbookContext, shoppingHistory, plannerContext] = await Promise.all([
         needsCookbookContext(text) ? getCookbookContext() : Promise.resolve(null),
         needsShoppingContext(text) ? getShoppingHistory() : Promise.resolve(null),
+        needsPlannerContext(text) ? getPlannerContext() : Promise.resolve(null),
       ])
-      const systemPrompt = buildSystem(preferences.dietary_restrictions, cookbookContext, shoppingHistory)
+      const systemPrompt = buildSystem(
+        preferences.dietary_restrictions, cookbookContext, shoppingHistory,
+        buildListContext(), plannerContext,
+      )
       const rawReply = await sendChatMessage(systemPrompt, messages, text)
 
       // Execute any embedded actions (meal planner / shopping list writes)
-      await executeActions(rawReply, user.id)
+      const listsChanged = await executeActions(rawReply, user.id, activeListId)
+      if (listsChanged) refreshLists()
 
       // Strip action tags before storing — text around them already confirms what happened
       const displayReply = stripActionTags(rawReply)
 
       setMessages(prev => [...prev, { role: 'assistant', rawContent: displayReply }])
 
-      await supabase.from('chat_history').insert([
-        { user_id: user.id, role: 'user',  content: text },
-        { user_id: user.id, role: 'model', content: displayReply },
+      // Explicit, distinct timestamps: a batch insert would give both rows the
+      // same created_at (Postgres now() is per-transaction), leaving reload
+      // ordering ambiguous — which then breaks Gemini's alternation requirement.
+      const stamp = Date.now()
+      const { error: saveError } = await supabase.from('chat_history').insert([
+        { user_id: user.id, role: 'user',  content: text,         created_at: new Date(stamp).toISOString() },
+        { user_id: user.id, role: 'model', content: displayReply, created_at: new Date(stamp + 1).toISOString() },
       ])
+      if (saveError) console.error('[Chat] failed to save history:', saveError)
     } catch (err) {
       console.error('[Chat] send failed:', err)
       setMessages(prev => [

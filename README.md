@@ -175,21 +175,63 @@ create policy "Users manage own recipes" on recipes
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 ```
 
+### `shopping_lists`
+Named shopping lists. Each user can have many (e.g. "Week 1", "Costco", "Shabbat").
+
+```sql
+create table shopping_lists (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid references auth.users(id) on delete cascade not null,
+  name       text not null,
+  is_default boolean default false,
+  created_at timestamptz default now()
+);
+alter table shopping_lists enable row level security;
+create policy "Users manage own shopping lists" on shopping_lists
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create index shopping_lists_user_idx on shopping_lists(user_id);
+```
+
 ### `shopping_list`
-Current shopping list items.
+Shopping list items. Each item belongs to a `shopping_lists` row via `list_id`.
 
 ```sql
 create table shopping_list (
   id          uuid primary key default gen_random_uuid(),
   user_id     uuid references auth.users(id) on delete cascade not null,
+  list_id     uuid references shopping_lists(id) on delete cascade,
   ingredient  text not null,
-  category    text default 'Other',   -- Produce | Meat | Dairy | Bakery | Pantry | Frozen | Other
-  recipe_name text,
+  amount      text,                   -- e.g. "2 cups" (kept separate from the name)
+  category    text default 'Other',   -- one of the 12 categories (see below)
+  recipe_name text,                   -- source recipe title (for "Used in:")
   checked     boolean default false,
   created_at  timestamptz default now()
 );
 alter table shopping_list enable row level security;
 create policy "Users manage own shopping list" on shopping_list
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create index shopping_list_list_idx on shopping_list(list_id);
+```
+
+Categories: 🥩 Protein · 🥬 Leafy Greens · 🥒 Vegetables · 🍎 Fruit · 🌿 Fresh Herbs ·
+🥜 Healthy Fats · 🥛 Refrigerated · 🥫 Pantry · 🧂 Spices & Seasonings · 🧊 Frozen ·
+💊 Supplements · 📦 Other
+
+### `ingredient_categories`
+Per-user category overrides. When a user re-files an ingredient, the choice is remembered
+and reused when that ingredient is added to any future list.
+
+```sql
+create table ingredient_categories (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid references auth.users(id) on delete cascade not null,
+  ingredient text not null,          -- lowercased, trimmed clean name
+  category   text not null,
+  updated_at timestamptz default now(),
+  unique (user_id, ingredient)
+);
+alter table ingredient_categories enable row level security;
+create policy "Users manage own ingredient categories" on ingredient_categories
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 ```
 
@@ -253,11 +295,82 @@ create table user_preferences (
   user_id              uuid references auth.users(id) on delete cascade not null unique,
   dietary_restrictions text default '',
   gemini_api_key       text default '',
+  active_list_id       uuid references shopping_lists(id) on delete set null,
   updated_at           timestamptz default now()
 );
 alter table user_preferences enable row level security;
 create policy "Users manage own preferences" on user_preferences
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+```
+
+### Migration — existing installs (multiple lists + 12 categories)
+
+If you already have the older single-list schema, run this **once** in the Supabase SQL editor.
+It is additive and safe to run on live data.
+
+```sql
+-- 1. Named lists
+create table if not exists shopping_lists (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid references auth.users(id) on delete cascade not null,
+  name       text not null,
+  is_default boolean default false,
+  created_at timestamptz default now()
+);
+alter table shopping_lists enable row level security;
+create policy "Users manage own shopping lists" on shopping_lists
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create index if not exists shopping_lists_user_idx on shopping_lists(user_id);
+
+-- 2. Item columns
+alter table shopping_list add column if not exists list_id uuid
+  references shopping_lists(id) on delete cascade;
+alter table shopping_list add column if not exists amount text;
+create index if not exists shopping_list_list_idx on shopping_list(list_id);
+
+-- 3. One default list per user who already has items, then assign existing items
+insert into shopping_lists (user_id, name, is_default)
+select distinct user_id, 'My List', true from shopping_list
+where user_id not in (select user_id from shopping_lists);
+
+update shopping_list sl
+set list_id = l.id
+from shopping_lists l
+where l.user_id = sl.user_id and l.is_default = true and sl.list_id is null;
+
+-- 4. Split the old "amount · recipe" hack into the new amount column
+update shopping_list
+set amount      = split_part(recipe_name, ' · ', 1),
+    recipe_name = split_part(recipe_name, ' · ', 2)
+where recipe_name like '% · %';
+
+-- 5. Remap the 7 old categories to the new 12 (Produce → Vegetables is intentionally
+--    coarse; the app re-categorizes live items on load and remembers your corrections)
+update shopping_list set category = case category
+  when 'Meat'    then 'Protein'
+  when 'Dairy'   then 'Refrigerated'
+  when 'Bakery'  then 'Pantry'
+  when 'Produce' then 'Vegetables'
+  else category
+end
+where category in ('Meat','Dairy','Bakery','Produce');
+
+-- 6. Per-user category overrides
+create table if not exists ingredient_categories (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid references auth.users(id) on delete cascade not null,
+  ingredient text not null,
+  category   text not null,
+  updated_at timestamptz default now(),
+  unique (user_id, ingredient)
+);
+alter table ingredient_categories enable row level security;
+create policy "Users manage own ingredient categories" on ingredient_categories
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- 7. Remember the active list per user (syncs across devices)
+alter table user_preferences add column if not exists active_list_id uuid
+  references shopping_lists(id) on delete set null;
 ```
 
 ### Supabase Storage

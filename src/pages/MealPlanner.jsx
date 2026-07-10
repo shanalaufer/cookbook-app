@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
+import IngredientChecklist from '../components/IngredientChecklist'
 
 const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack']
 const SLOT_ICONS = { breakfast: '☀️', lunch: '🌤️', dinner: '🌙', snack: '🍎' }
@@ -37,6 +38,7 @@ export default function MealPlanner() {
   const [editing, setEditing] = useState(null)
   const [editText, setEditText] = useState('')
   const [editRecipeId, setEditRecipeId] = useState('')
+  const [shopping, setShopping] = useState(null)   // { entries, title } for the checklist modal
 
   const days = getWeekDates(weekOffset)
 
@@ -98,11 +100,44 @@ export default function MealPlanner() {
     setEditing(null)
   }
 
+  // Gather ingredients from the planned cookbook recipes in scope and open the
+  // shopping checklist. Custom-text meals (no recipe_id) are skipped.
+  async function buildShoppingEntries(scopeEntries, title) {
+    const ids = [...new Set(scopeEntries.filter(e => e?.recipe_id).map(e => e.recipe_id))]
+    if (!ids.length) {
+      alert('No cookbook recipes planned here yet — add recipes from your cookbook to a meal slot first.')
+      return
+    }
+    const { data } = await supabase.from('recipes').select('id,title,ingredients').in('id', ids)
+    const byId = Object.fromEntries((data ?? []).map(r => [r.id, r]))
+    const entries = []
+    for (const e of scopeEntries) {
+      const r = e?.recipe_id ? byId[e.recipe_id] : null
+      if (!r) continue
+      for (const ing of r.ingredients ?? []) {
+        entries.push({ label: ing, recipeName: r.title, recipeId: r.id })
+      }
+    }
+    if (!entries.length) { alert('Those recipes have no ingredients listed.'); return }
+    setShopping({ entries, title })
+  }
+
+  function addDayToShopping(date) {
+    const key = toDateStr(date)
+    const dayEntries = SLOTS.map(s => plans[`${key}:${s}`]).filter(Boolean)
+    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' })
+    buildShoppingEntries(dayEntries, `${dayName}'s meals`)
+  }
+
   const weekLabel = (() => {
     const start = days[0]
     const end = days[6]
     return `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
   })()
+
+  function addWeekToShopping() {
+    buildShoppingEntries(Object.values(plans), `This week's meals (${weekLabel})`)
+  }
 
   return (
     <div className="page">
@@ -116,11 +151,22 @@ export default function MealPlanner() {
         <button onClick={() => setWeekOffset(w => w + 1)}>›</button>
       </div>
 
+      <button className="btn-secondary" style={{ width: '100%', marginBottom: 16 }} onClick={addWeekToShopping}>
+        🛒 Add this week's meals to a shopping list
+      </button>
+
       {days.map(date => (
         <div key={toDateStr(date)} className="day-card">
           <div className={`day-header${isToday(date) ? ' today' : ''}`}>
             <span>{date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-            {isToday(date) && <span className="today-badge">Today</span>}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {isToday(date) && <span className="today-badge">Today</span>}
+              <button
+                className="day-shopping-btn"
+                onClick={() => addDayToShopping(date)}
+                aria-label="Add this day's meals to a shopping list"
+              >🛒</button>
+            </span>
           </div>
           <div className="meal-slots">
             {SLOTS.map(slot => {
@@ -188,6 +234,15 @@ export default function MealPlanner() {
           </div>
         </div>,
         document.body
+      )}
+
+      {shopping && (
+        <IngredientChecklist
+          entries={shopping.entries}
+          title={shopping.title}
+          onDone={() => setShopping(null)}
+          onCancel={() => setShopping(null)}
+        />
       )}
     </div>
   )

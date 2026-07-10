@@ -165,12 +165,17 @@ export async function extractRecipeFromImage(base64Data, mimeType, dietaryRestri
 
 export async function categorizeIngredients(ingredients) {
   const system = `You are a grocery categorization expert. Assign every ingredient to exactly one of these categories:
-- Produce: all fresh or raw vegetables, fruits, herbs, and leafy greens (e.g. cabbage, onion, garlic, carrots, celery, lettuce, spinach, kale, tomatoes, potatoes, apples, lemon, lime, parsley, cilantro, basil, ginger, avocado, mushrooms, bell peppers, zucchini, eggplant, corn, beets, radishes, cucumber, broccoli, cauliflower)
-- Meat: beef, chicken, pork, lamb, turkey, fish, shrimp, seafood, bacon, sausage, deli meats, eggs
-- Dairy: milk, butter, cream, cheese, yogurt, sour cream, cream cheese, half-and-half, heavy cream, ice cream
-- Bakery: bread, rolls, tortillas, pita, buns, bagels, pastries, cake, crackers
-- Pantry: canned goods, oils, vinegar, soy sauce, flour, sugar, rice, pasta, beans, lentils, nuts, seeds, dried spices, seasonings, condiments, broth, stock, honey, maple syrup, chocolate chips, cocoa powder, baking powder, baking soda, salt, pepper, hot sauce, tomato paste, canned tomatoes, coconut milk
+- Protein: beef, chicken, pork, lamb, turkey, fish, shrimp, seafood, bacon, sausage, deli meats, eggs, tofu, tempeh
+- Leafy Greens: lettuce, spinach, kale, arugula, chard, cabbage, romaine, mixed greens, collards, bok choy
+- Vegetables: onion, garlic, carrots, celery, potatoes, tomatoes, mushrooms, bell peppers, zucchini, eggplant, corn, beets, radishes, cucumber, broccoli, cauliflower, squash, green beans
+- Fruit: apples, banana, berries, lemon, lime, orange, grapes, melon, mango, avocado, peach, pear, pineapple
+- Fresh Herbs: parsley, cilantro, basil, mint, dill, rosemary, thyme, sage, chives, tarragon (fresh, not dried)
+- Healthy Fats: olive oil, avocado oil, coconut oil, nuts, seeds, nut butters, olives, tahini
+- Refrigerated: milk, butter, cream, cheese, yogurt, sour cream, cream cheese, hummus, tofu if refrigerated, other dairy and chilled items
+- Pantry: canned goods, vinegar, soy sauce, flour, sugar, rice, pasta, beans, lentils, dried grains, broth, stock, honey, maple syrup, bread, crackers, tortillas, condiments, tomato paste, canned tomatoes, coconut milk
+- Spices & Seasonings: salt, pepper, dried spices, dried herbs, spice blends, bouillon, extracts, baking powder, baking soda
 - Frozen: frozen vegetables, frozen meals, ice cream, frozen fruit, frozen meat if specified as frozen
+- Supplements: vitamins, protein powder, collagen, supplements, electrolyte powders
 - Other: non-food items, cleaning supplies, or anything that truly does not fit above`
   const prompt = `Categorize every ingredient. Return ONLY a raw JSON object — no explanation, no markdown:\n{"ingredient name": "Category"}\n\nIngredients: ${JSON.stringify(ingredients)}`
   const client = getGroqClient()
@@ -194,12 +199,26 @@ export async function categorizeIngredients(ingredients) {
 
 export async function sendChatMessage(systemPrompt, history, userMessage) {
   const model = getGeminiModel(systemPrompt)
-  const geminiHistory = history.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.rawContent }],
-  }))
-  // Gemini requires history to start with a user turn
+
+  // Gemini's startChat requires history to begin with a user turn and to
+  // strictly alternate user/model — otherwise it throws. Reloaded history can
+  // violate this (same-timestamp rows can come back out of order), so collapse
+  // any consecutive same-role turns and drop leading model turns before sending.
+  const mapped = history
+    .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', text: m.rawContent ?? '' }))
+    .filter(m => m.text.trim())
+
+  const geminiHistory = []
+  for (const turn of mapped) {
+    const last = geminiHistory[geminiHistory.length - 1]
+    if (last && last.role === turn.role) {
+      last.parts[0].text += '\n\n' + turn.text
+    } else {
+      geminiHistory.push({ role: turn.role, parts: [{ text: turn.text }] })
+    }
+  }
   while (geminiHistory.length > 0 && geminiHistory[0].role === 'model') geminiHistory.shift()
+
   const chat = model.startChat({ history: geminiHistory })
   const allText = systemPrompt + history.map(m => m.rawContent).join(' ') + userMessage
   const result = await timedCall('chat message', [allText], () =>
