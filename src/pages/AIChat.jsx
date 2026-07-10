@@ -10,7 +10,7 @@ import ReactMarkdown from 'react-markdown'
 
 // ─── System prompt ────────────────────────────────────────
 
-function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory, listContext, plannerContext) {
+function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory, listContext, plannerContext, currentListItems) {
   const today = new Date()
   const dateStr = today.toISOString().slice(0, 10)
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' })
@@ -28,6 +28,8 @@ Today is ${dayName}, ${dateStr}.`,
     parts.push(`Their past shopping trips (so you know what they usually buy):\n${shoppingHistory}`)
   if (listContext)
     parts.push(listContext)
+  if (currentListItems)
+    parts.push(`Items currently on the active shopping list (so you can remove, dedupe, or answer questions about it):\n${currentListItems}`)
   if (plannerContext)
     parts.push(`Their meal planner (so you can turn planned meals into shopping items):\n${plannerContext}`)
 
@@ -59,6 +61,9 @@ Categories: Protein, Leafy Greens, Vegetables, Fruit, Fresh Herbs, Healthy Fats,
 To remove items from a shopping list, emit (just the ingredient names):
 <action>{"type":"remove_shopping","list":"Costco","items":["salmon","lemon"]}</action>
 
+To remove duplicate items from a list (keeps one of each ingredient):
+<action>{"type":"dedupe_shopping","list":"Costco"}</action>
+
 To create a new shopping list:
 <action>{"type":"create_list","name":"Phase 1"}</action>
 
@@ -84,6 +89,9 @@ You: <action>{"type":"create_list","name":"Phase 1"}</action>Created your Phase 
 
 User: "move the checked items into a new list called Week 2"
 You: <action>{"type":"move_checked","to":"Week 2"}</action>Moved your checked items over to Week 2.
+
+User: "delete the duplicates on my list" / "remove duplicate items"
+You: <action>{"type":"dedupe_shopping"}</action>Cleaned up the duplicates on your list! ✅
 
 User: "put salmon on Thursday for dinner"
 You: <action>{"type":"add_meal","name":"Salmon","date":"${dateStr}","slot":"dinner"}</action>Got it — salmon's on the menu for Thursday dinner.
@@ -264,6 +272,29 @@ async function executeActions(rawReply, userId, activeListId) {
           if (error) console.error('[Action] move_checked failed:', error)
           else listsChanged = true
         }
+      } else if (action.type === 'dedupe_shopping') {
+        // Deterministically drop duplicate rows on a list — keep the earliest of
+        // each ingredient (case-insensitive), delete the rest.
+        const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
+        if (listId) {
+          const { data } = await supabase
+            .from('shopping_list')
+            .select('id,ingredient')
+            .eq('user_id', userId)
+            .eq('list_id', listId)
+            .order('created_at', { ascending: true })
+          const seen = new Set()
+          const dupeIds = []
+          for (const row of data ?? []) {
+            const k = row.ingredient.toLowerCase().trim()
+            if (seen.has(k)) dupeIds.push(row.id)
+            else seen.add(k)
+          }
+          if (dupeIds.length) {
+            const { error } = await supabase.from('shopping_list').delete().in('id', dupeIds)
+            if (error) console.error('[Action] dedupe failed:', error)
+          }
+        }
       }
     } catch (err) {
       console.error('[Action] failed to execute tag content:', match[1], err)
@@ -294,10 +325,12 @@ export default function AIChat() {
       .order('created_at', { ascending: true })
       .limit(120)
     setMessages(
-      (data ?? []).map(m => ({
-        role: m.role === 'model' ? 'assistant' : 'user',
-        rawContent: m.content,
-      }))
+      (data ?? [])
+        .filter(m => (m.content ?? '').trim())   // skip legacy empty rows (blank bubbles / poison)
+        .map(m => ({
+          role: m.role === 'model' ? 'assistant' : 'user',
+          rawContent: m.content,
+        }))
     )
     setHistoryLoaded(true)
   }, [user.id])
@@ -367,6 +400,21 @@ export default function AIChat() {
       (active ? ` The active list is "${active.name}" — use it when they don't name one.` : '')
   }
 
+  // The active list's actual contents — lets the AI remove/dedupe accurately.
+  async function getCurrentListContext() {
+    if (!activeListId) return null
+    const { data } = await supabase
+      .from('shopping_list')
+      .select('ingredient,amount,category,checked')
+      .eq('user_id', user.id)
+      .eq('list_id', activeListId)
+      .order('created_at', { ascending: true })
+    if (!data?.length) return null
+    return data
+      .map(r => `- ${r.amount ? r.amount + ' ' : ''}${r.ingredient} [${r.category}]${r.checked ? ' (checked)' : ''}`)
+      .join('\n')
+  }
+
   async function sendMessage(e) {
     e.preventDefault()
     const text = input.trim()
@@ -378,14 +426,15 @@ export default function AIChat() {
     setLoading(true)
 
     try {
-      const [cookbookContext, shoppingHistory, plannerContext] = await Promise.all([
+      const [cookbookContext, shoppingHistory, plannerContext, currentList] = await Promise.all([
         needsCookbookContext(text) ? getCookbookContext() : Promise.resolve(null),
         needsShoppingContext(text) ? getShoppingHistory() : Promise.resolve(null),
         needsPlannerContext(text) ? getPlannerContext() : Promise.resolve(null),
+        needsShoppingContext(text) ? getCurrentListContext() : Promise.resolve(null),
       ])
       const systemPrompt = buildSystem(
         preferences.dietary_restrictions, cookbookContext, shoppingHistory,
-        buildListContext(), plannerContext,
+        buildListContext(), plannerContext, currentList,
       )
       const rawReply = await sendChatMessage(systemPrompt, messages, text)
 
@@ -393,8 +442,10 @@ export default function AIChat() {
       const listsChanged = await executeActions(rawReply, user.id, activeListId)
       if (listsChanged) refreshLists()
 
-      // Strip action tags before storing — text around them already confirms what happened
-      const displayReply = stripActionTags(rawReply)
+      // Strip action tags before storing — text around them already confirms what happened.
+      // Never store an empty reply: an empty model turn gets filtered on reload, which
+      // leaves history ending on a user turn and breaks Gemini's alternation on the next send.
+      const displayReply = stripActionTags(rawReply) || 'Done! ✅'
 
       setMessages(prev => [...prev, { role: 'assistant', rawContent: displayReply }])
 

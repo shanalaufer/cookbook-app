@@ -218,6 +218,10 @@ export async function sendChatMessage(systemPrompt, history, userMessage) {
     }
   }
   while (geminiHistory.length > 0 && geminiHistory[0].role === 'model') geminiHistory.shift()
+  // Drop trailing user turn(s) so history ends on a model turn — otherwise the
+  // user message we're about to send would create two user turns in a row, which
+  // Gemini rejects. This also heals older histories that saved an empty AI reply.
+  while (geminiHistory.length > 0 && geminiHistory[geminiHistory.length - 1].role === 'user') geminiHistory.pop()
 
   const chat = model.startChat({ history: geminiHistory })
   const allText = systemPrompt + history.map(m => m.rawContent).join(' ') + userMessage
