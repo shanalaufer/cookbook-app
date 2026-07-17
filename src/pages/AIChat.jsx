@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { useShoppingLists } from '../context/ShoppingListsContext'
 import { supabase } from '../lib/supabase'
 import { sendChatMessage } from '../lib/ai'
-import { resolveListByName } from '../lib/lists'
+import { resolveListByName, getLists } from '../lib/lists'
 import { normalizeCategory } from '../lib/categories'
 import { ingredientKey } from '../lib/quantity'
 import { getCategoryOverrides, rememberCategory } from '../lib/categorize'
@@ -12,7 +12,7 @@ import ReactMarkdown from 'react-markdown'
 
 // ─── System prompt ────────────────────────────────────────
 
-function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory, listContext, plannerContext, currentListItems) {
+function buildSystem(dietaryRestrictions, cookbookContext, shoppingHistory, listContext, plannerContext, allListsContents) {
   const today = new Date()
   const dateStr = today.toISOString().slice(0, 10)
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' })
@@ -30,8 +30,8 @@ Today is ${dayName}, ${dateStr}.`,
     parts.push(`Their past shopping trips (so you know what they usually buy):\n${shoppingHistory}`)
   if (listContext)
     parts.push(listContext)
-  if (currentListItems)
-    parts.push(`Items currently on the active shopping list (so you can remove, dedupe, or answer questions about it):\n${currentListItems}`)
+  if (allListsContents)
+    parts.push(`Live contents of every shopping list, fetched just now. Trust THIS over anything said earlier in the conversation when adding, removing, deduping, or answering questions about the lists:\n${allListsContents}`)
   if (plannerContext)
     parts.push(`Their meal planner (so you can turn planned meals into shopping items):\n${plannerContext}`)
 
@@ -59,6 +59,8 @@ Shopping actions take an optional "list" — the name of the list to act on. Mat
 To add to a shopping list, emit:
 <action>{"type":"add_shopping","list":"Costco","items":[{"ingredient":"salmon","category":"Protein"},{"ingredient":"lemon","category":"Fruit"}]}</action>
 Categories: Protein, Leafy Greens, Vegetables, Fruit, Fresh Herbs, Healthy Fats, Refrigerated, Pantry, Spices & Seasonings, Frozen, Supplements, Other
+
+Before adding, check the live list contents above. If something the user asks to add is already on the target list, leave it out of the action and tell them it's already there — never claim you added an item that was already present. The app also skips duplicates at insert time, so a confirmation that doesn't match the live contents will be visibly wrong to the user.
 
 To remove items from a shopping list, emit (just the ingredient names):
 <action>{"type":"remove_shopping","list":"Costco","items":["salmon","lemon"]}</action>
@@ -120,10 +122,6 @@ After emitting the tag, confirm in ONE short sentence exactly what you added. Do
 
 function needsCookbookContext(text) {
   return /recipe|cookbook|saved|cook|ingredient|dish|meal|made|what.*(have|make)|my (recipe|food)|planner|add.*to.*(dinner|lunch|breakfast)/i.test(text)
-}
-
-function needsShoppingContext(text) {
-  return /shop|buy|bought|groceri|ingredient|list|store|purchase|usually (buy|get)|do i have|missing/i.test(text)
 }
 
 function needsPlannerContext(text) {
@@ -195,11 +193,14 @@ function resolveDate(dateStr) {
 }
 
 // Insert items into a list: the user's remembered category overrides beat the
-// model's guess, and ingredients already on the list are skipped so repeated
-// asks never pile up duplicates (batch-internal dupes are skipped too).
+// model's guess. Ingredients already on the list aren't re-inserted, but they're
+// returned as `skipped` (and insert errors as `failed`) so the chat can tell the
+// user what really happened instead of letting a claimed "Added!" stand.
+// Batch-internal repeats just collapse to one row — they still count as added.
 async function insertShoppingItems(userId, listId, items) {
+  const result = { added: [], skipped: [], failed: [] }
   const clean = (items ?? []).filter(i => i?.ingredient?.trim())
-  if (!clean.length || !listId) return
+  if (!clean.length || !listId) return result
   const overrides = await getCategoryOverrides(userId, clean.map(i => i.ingredient))
   const { data: existing } = await supabase
     .from('shopping_list')
@@ -207,33 +208,45 @@ async function insertShoppingItems(userId, listId, items) {
     .eq('user_id', userId)
     .eq('list_id', listId)
   const have = new Set((existing ?? []).map(r => ingredientKey(r.ingredient)))
+  const inBatch = new Set()
   const rows = []
   for (const item of clean) {
-    const key = ingredientKey(item.ingredient)
-    if (have.has(key)) continue
-    have.add(key)
+    const name = item.ingredient.trim()
+    const key = ingredientKey(name)
+    if (have.has(key)) { result.skipped.push(name); continue }
+    if (inBatch.has(key)) continue
+    inBatch.add(key)
     rows.push({
       user_id: userId,
       list_id: listId,
-      ingredient: item.ingredient.trim(),
+      ingredient: name,
       amount: item.amount || null,
-      category: overrides[key] ?? overrides[item.ingredient.toLowerCase().trim()] ?? normalizeCategory(item.category),
+      category: overrides[key] ?? overrides[name.toLowerCase()] ?? normalizeCategory(item.category),
       checked: false,
     })
   }
-  if (!rows.length) return
+  if (!rows.length) return result
   const { error } = await supabase.from('shopping_list').insert(rows)
-  if (error) console.error('[Action] shopping list insert failed:', error)
+  if (error) {
+    console.error('[Action] shopping list insert failed:', error)
+    result.failed.push(...rows.map(r => r.ingredient))
+  } else {
+    result.added.push(...rows.map(r => r.ingredient))
+  }
+  return result
 }
 
 // Executes embedded <action> tags. activeListId is the fallback list when the
-// model doesn't name one. Returns true if any shopping list was created/changed
-// so the caller can refresh the list switcher.
+// model doesn't name one. Returns whether any shopping list was created/changed
+// (so the caller can refresh the list switcher) plus the add outcomes, so the
+// visible reply can be corrected when the model's confirmation overpromised.
 async function executeActions(rawReply, userId, activeListId) {
   const re = /<action>([\s\S]*?)<\/action>/g
   let match
   let found = false
   let listsChanged = false
+  const added = [], skipped = [], failed = []
+  const collect = res => { added.push(...res.added); skipped.push(...res.skipped); failed.push(...res.failed) }
   while ((match = re.exec(rawReply)) !== null) {
     found = true
     try {
@@ -265,7 +278,7 @@ async function executeActions(rawReply, userId, activeListId) {
       } else if (action.type === 'add_shopping') {
         const listId = await resolveListByName(userId, action.list, { create: true, fallbackListId: activeListId })
         if (action.list) listsChanged = true   // a named list may have just been created
-        await insertShoppingItems(userId, listId, action.items)
+        collect(await insertShoppingItems(userId, listId, action.items))
       } else if (action.type === 'remove_shopping') {
         // Fetch then match by normalized key so "avocados" removes "avocado, diced"
         const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
@@ -284,7 +297,7 @@ async function executeActions(rawReply, userId, activeListId) {
       } else if (action.type === 'create_list') {
         const listId = await resolveListByName(userId, action.name, { create: true })
         listsChanged = true
-        if (action.items?.length) await insertShoppingItems(userId, listId, action.items)
+        if (action.items?.length) collect(await insertShoppingItems(userId, listId, action.items))
       } else if (action.type === 'move_checked') {
         const target = await resolveListByName(userId, action.to, { create: true })
         if (target && activeListId) {
@@ -350,7 +363,7 @@ async function executeActions(rawReply, userId, activeListId) {
     }
   }
   if (!found) console.log('[Action] no <action> tags found in reply:', rawReply.slice(0, 400))
-  return listsChanged
+  return { listsChanged, added, skipped, failed }
 }
 
 // ─── Component ────────────────────────────────────────────
@@ -453,19 +466,30 @@ export default function AIChat() {
       (active ? ` The active list is "${active.name}" — use it when they don't name one.` : '')
   }
 
-  // The active list's actual contents — lets the AI remove/dedupe accurately.
-  async function getCurrentListContext() {
-    if (!activeListId) return null
-    const { data } = await supabase
-      .from('shopping_list')
-      .select('ingredient,amount,category,checked')
-      .eq('user_id', user.id)
-      .eq('list_id', activeListId)
-      .order('created_at', { ascending: true })
-    if (!data?.length) return null
-    return data
-      .map(r => `- ${r.amount ? r.amount + ' ' : ''}${r.ingredient} [${r.category}]${r.checked ? ' (checked)' : ''}`)
-      .join('\n')
+  // Live contents of EVERY list, fetched fresh from the database at send time —
+  // so removes/dedupes on non-active lists aren't blind, and the model never has
+  // to reconstruct list state from stale chat history. Lists come from the DB
+  // too (not React state) so ones created moments ago by an action are included.
+  async function getAllListsContext() {
+    const [allLists, { data: rows }] = await Promise.all([
+      getLists(user.id),
+      supabase
+        .from('shopping_list')
+        .select('ingredient,amount,category,checked,list_id')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true }),
+    ])
+    if (!allLists.length) return null
+    const byList = {}
+    for (const r of rows ?? []) (byList[r.list_id] ??= []).push(r)
+    return allLists.map(l => {
+      const header = `List "${l.name}"${l.id === activeListId ? ' (ACTIVE)' : ''}:`
+      const items = byList[l.id] ?? []
+      if (!items.length) return `${header} (empty)`
+      return header + '\n' + items
+        .map(r => `- ${r.amount ? r.amount + ' ' : ''}${r.ingredient} [${r.category}]${r.checked ? ' (checked)' : ''}`)
+        .join('\n')
+    }).join('\n\n')
   }
 
   async function sendMessage(e) {
@@ -479,26 +503,43 @@ export default function AIChat() {
     setLoading(true)
 
     try {
-      const [cookbookContext, shoppingHistory, plannerContext, currentList] = await Promise.all([
+      // Shopping context is ALWAYS fetched fresh — a shopping action is possible
+      // on any message, and keyword-gating it left the model acting on stale
+      // chat history whenever the phrasing didn't match the regex.
+      const [cookbookContext, shoppingHistory, plannerContext, allListsContents] = await Promise.all([
         needsCookbookContext(text) ? getCookbookContext() : Promise.resolve(null),
-        needsShoppingContext(text) ? getShoppingHistory() : Promise.resolve(null),
+        getShoppingHistory(),
         needsPlannerContext(text) ? getPlannerContext() : Promise.resolve(null),
-        needsShoppingContext(text) ? getCurrentListContext() : Promise.resolve(null),
+        getAllListsContext(),
       ])
       const systemPrompt = buildSystem(
         preferences.dietary_restrictions, cookbookContext, shoppingHistory,
-        buildListContext(), plannerContext, currentList,
+        buildListContext(), plannerContext, allListsContents,
       )
       const rawReply = await sendChatMessage(systemPrompt, messages, text)
 
       // Execute any embedded actions (meal planner / shopping list writes)
-      const listsChanged = await executeActions(rawReply, user.id, activeListId)
+      const { listsChanged, added, skipped, failed } = await executeActions(rawReply, user.id, activeListId)
       if (listsChanged) refreshLists()
 
       // Strip action tags before storing — text around them already confirms what happened.
       // Never store an empty reply: an empty model turn gets filtered on reload, which
       // leaves history ending on a user turn and breaks Gemini's alternation on the next send.
-      const displayReply = stripActionTags(rawReply) || 'Done! ✅'
+      let displayReply = stripActionTags(rawReply) || 'Done! ✅'
+
+      // Honesty guard: the model writes its confirmation before the database is
+      // touched, so if items were skipped as duplicates or the insert failed,
+      // correct the record in the visible reply. This also lands in saved
+      // history, so future turns see what actually happened.
+      if (skipped.length) {
+        const names = [...new Set(skipped)].join(', ')
+        displayReply += added.length
+          ? `\n\n_(Already on the list, so not added again: ${names}.)_`
+          : `\n\n_(Nothing new was added — already on the list: ${names}.)_`
+      }
+      if (failed.length) {
+        displayReply += `\n\n_(Couldn't save to the list: ${[...new Set(failed)].join(', ')} — please try again.)_`
+      }
 
       setMessages(prev => [...prev, { role: 'assistant', rawContent: displayReply }])
 
