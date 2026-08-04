@@ -25,8 +25,12 @@ export function AuthProvider({ children }) {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-      if (session?.user) loadPreferences(session.user.id)
+      const nextUser = session?.user ?? null
+      // Preserve object identity across token refreshes — Supabase sends a
+      // fresh user object on every auth event, and swapping it re-runs every
+      // effect keyed on `user` (e.g. shopping-list init).
+      setUser(prev => (prev?.id === nextUser?.id ? prev : nextUser))
+      if (nextUser) loadPreferences(nextUser.id)
       else setPreferences({ dietary_restrictions: '', gemini_api_key: '' })
     })
 
@@ -78,4 +82,5 @@ export function AuthProvider({ children }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-locating the hook with its provider is worth losing fast-refresh here
 export const useAuth = () => useContext(AuthContext)

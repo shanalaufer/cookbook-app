@@ -24,6 +24,7 @@ export default function IngredientChecklist({
   const [checked, setChecked] = useState(() => new Set(rows.map((_, i) => i)))
   const [targetListId, setTargetListId] = useState(activeListId)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   // Show the source recipe per row only when the list spans more than one recipe
   const multiRecipe = new Set(rows.map(r => r.recipeName)).size > 1
@@ -60,7 +61,14 @@ export default function IngredientChecklist({
         recipe_name: src.recipeName ?? null,
         checked: false,
       }))
-      await supabase.from('shopping_list').insert(insertRows)
+      // Only close on success — a silently failed insert would look like the
+      // items were added when nothing reached the list.
+      const { error: insertError } = await supabase.from('shopping_list').insert(insertRows)
+      if (insertError) {
+        console.error('[Checklist] insert failed:', insertError)
+        setError("Couldn't add the items — please try again.")
+        return
+      }
       onDone()
     } finally {
       setLoading(false)
@@ -103,6 +111,8 @@ export default function IngredientChecklist({
             </label>
           ))}
         </div>
+
+        {error && <div className="error-banner" style={{ marginTop: 12 }}>{error}</div>}
 
         <div className="checklist-actions">
           <button className="btn-ghost" onClick={onCancel}>Cancel</button>

@@ -18,7 +18,7 @@ export function resizeImageToJpegBase64(file, maxSide = 800) {
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
       resolve(canvas.toDataURL('image/jpeg', 0.85).split(',')[1])
     }
-    img.onerror = reject
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e) }
     img.src = url
   })
 }

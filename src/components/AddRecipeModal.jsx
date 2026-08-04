@@ -82,6 +82,8 @@ function resizeImage(file, maxSide = 800) {
 async function fetchPageContent(url) {
   const proxy = `https://corsproxy.io/?${encodeURIComponent(url)}`
   const res  = await fetch(proxy)
+  // A proxy error page must not be parsed as if it were the recipe page
+  if (!res.ok) throw new Error(`Couldn't fetch that page (${res.status}) — try pasting the recipe text instead.`)
   const html = await res.text()
   const doc  = new DOMParser().parseFromString(html, 'text/html')
 
@@ -183,6 +185,13 @@ export default function AddRecipeModal({ onClose, onSaved }) {
     setMethod(null); setInput(''); setError(''); setDroppedFile(null)
   }
 
+  // Confirm before an overlay tap or ✕ throws away typed text, a chosen file,
+  // or a completed AI extraction.
+  function requestClose() {
+    const dirty = input.trim() || droppedFile || preview
+    if (!dirty || confirm('Discard this recipe?')) onClose()
+  }
+
   async function handleExtract() {
     setError('')
 
@@ -267,9 +276,9 @@ export default function AddRecipeModal({ onClose, onSaved }) {
     const hidden  = total - visible
 
     return createPortal(
-      <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-overlay" onClick={requestClose}>
         <div className="modal-content" onClick={e => e.stopPropagation()}>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={requestClose}>✕</button>
           <h3 className="modal-title">Review Recipe</h3>
 
           <div className="preview-recipe">
@@ -318,9 +327,9 @@ export default function AddRecipeModal({ onClose, onSaved }) {
 
   // ── Input step ──────────────────────────────────────────
   return createPortal(
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={requestClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
-        <button className="modal-close" onClick={onClose}>✕</button>
+        <button className="modal-close" onClick={requestClose}>✕</button>
         <h3 className="modal-title">Add Recipe</h3>
 
         {!method ? (

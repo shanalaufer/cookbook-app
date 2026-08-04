@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { useShoppingLists } from '../context/ShoppingListsContext'
@@ -74,8 +74,13 @@ export default function ShoppingList() {
     setItems(prev => prev.map(i => byId[i.id] ? { ...i, category: byId[i.id] } : i))
   }, [user.id])
 
+  // Monotonic counter so an in-flight load for a previous list can't overwrite
+  // the items of the list selected after it.
+  const loadSeq = useRef(0)
+
   const load = useCallback(async () => {
     if (!activeListId) { setItems([]); setLoading(false); return }
+    const seq = ++loadSeq.current
     setLoading(true)
     const { data, error: qErr } = await supabase
       .from('shopping_list')
@@ -83,7 +88,13 @@ export default function ShoppingList() {
       .eq('user_id', user.id)
       .eq('list_id', activeListId)
       .order('created_at', { ascending: true })
-    if (qErr) console.error('[Shopping] load failed (has the migration been run?):', qErr.message)
+    if (seq !== loadSeq.current) return   // superseded by a newer load
+    if (qErr) {
+      // Keep whatever is on screen — an error must not render as an empty list
+      console.error('[Shopping] load failed (has the migration been run?):', qErr.message)
+      setLoading(false)
+      return
+    }
     const rows = data ?? []
     setItems(rows)
     setLoading(false)
@@ -91,14 +102,16 @@ export default function ShoppingList() {
   }, [user.id, activeListId, recategorizeUnknowns])
 
   // Wait for the lists context before querying — avoids a null-list hang
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch; setState runs after the await, not synchronously
   useEffect(() => { if (ready) load() }, [ready, load])
 
   async function toggleItem(group) {
     const newChecked = !group.checked
-    await supabase
+    const { error } = await supabase
       .from('shopping_list')
       .update({ checked: newChecked })
       .in('id', group.ids)
+    if (error) { console.error('[Shopping] toggle failed:', error); return }
     setItems(prev => prev.map(i => group.ids.includes(i.id) ? { ...i, checked: newChecked } : i))
   }
 
@@ -107,7 +120,7 @@ export default function ShoppingList() {
     if (!checkedItems.length) return
 
     const clearedAt = new Date().toISOString()
-    await supabase.from('shopping_history').insert(
+    const { error: historyError } = await supabase.from('shopping_history').insert(
       checkedItems.map(item => ({
         user_id:     item.user_id,
         ingredient:  item.ingredient,
@@ -116,8 +129,19 @@ export default function ShoppingList() {
         cleared_at:  clearedAt,
       }))
     )
+    if (historyError) {
+      console.error('[Shopping] history insert failed:', historyError)
+      alert("Couldn't record shopping history — nothing was cleared. Please try again.")
+      return
+    }
 
-    await supabase.from('shopping_list').delete().in('id', checkedItems.map(i => i.id))
+    const { error: deleteError } = await supabase
+      .from('shopping_list').delete().in('id', checkedItems.map(i => i.id))
+    if (deleteError) {
+      console.error('[Shopping] clear failed:', deleteError)
+      alert("Couldn't clear the checked items — please try again.")
+      return
+    }
     setItems(prev => prev.filter(i => !i.checked))
   }
 
@@ -130,10 +154,15 @@ export default function ShoppingList() {
   async function saveEdit() {
     const name = editName.trim()
     if (!name) return
-    await supabase
+    const { error } = await supabase
       .from('shopping_list')
       .update({ ingredient: name, category: editCategory })
       .in('id', editingItem.ids)
+    if (error) {
+      console.error('[Shopping] edit failed:', error)
+      alert("Couldn't save the change — please try again.")
+      return
+    }
     setItems(prev => prev.map(i =>
       editingItem.ids.includes(i.id) ? { ...i, ingredient: name, category: editCategory } : i
     ))
@@ -145,14 +174,19 @@ export default function ShoppingList() {
   }
 
   async function deleteItem(group) {
-    await supabase.from('shopping_list').delete().in('id', group.ids)
+    const { error } = await supabase.from('shopping_list').delete().in('id', group.ids)
+    if (error) {
+      console.error('[Shopping] delete failed:', error)
+      alert("Couldn't delete that item — please try again.")
+      return
+    }
     setItems(prev => prev.filter(i => !group.ids.includes(i.id)))
   }
 
   async function addManual(e) {
     e.preventDefault()
     if (!manualInput.trim() || !activeListId) return
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('shopping_list')
       .insert({
         user_id: user.id,
@@ -163,6 +197,12 @@ export default function ShoppingList() {
       })
       .select()
       .single()
+    if (error) {
+      // Keep the typed text so the user can just hit Add again
+      console.error('[Shopping] add failed:', error)
+      alert("Couldn't add that item — please try again.")
+      return
+    }
     if (data) setItems(prev => [...prev, data])
     setManualInput('')
   }
@@ -171,38 +211,58 @@ export default function ShoppingList() {
   async function handleNewList() {
     const name = prompt('Name your new list:')?.trim()
     if (!name) return
-    const list = await createList(user.id, name)
-    await refreshLists()
-    setActiveList(list.id)
-    setShowListMenu(false)
+    try {
+      const list = await createList(user.id, name)
+      await refreshLists()
+      setActiveList(list.id)
+      setShowListMenu(false)
+    } catch (err) {
+      console.error('[Lists] create failed:', err)
+      alert("Couldn't create the list — please try again.")
+    }
   }
 
   async function handleRenameList() {
     const name = prompt('Rename list:', activeList?.name)?.trim()
     if (!name || !activeList) return
-    await renameList(activeList.id, name)
-    await refreshLists()
-    setShowListMenu(false)
+    try {
+      await renameList(activeList.id, name)
+      await refreshLists()
+      setShowListMenu(false)
+    } catch (err) {
+      console.error('[Lists] rename failed:', err)
+      alert("Couldn't rename the list — please try again.")
+    }
   }
 
   async function handleDuplicateList() {
     if (!activeList) return
     const name = prompt('Name for the copy:', `${activeList.name} copy`)?.trim()
     if (!name) return
-    const list = await duplicateList(user.id, activeList.id, name)
-    await refreshLists()
-    setActiveList(list.id)
-    setShowListMenu(false)
+    try {
+      const list = await duplicateList(user.id, activeList.id, name)
+      await refreshLists()
+      setActiveList(list.id)
+      setShowListMenu(false)
+    } catch (err) {
+      console.error('[Lists] duplicate failed:', err)
+      alert("Couldn't copy the list — please check it before relying on the copy.")
+    }
   }
 
   async function handleDeleteList() {
     if (!activeList) return
     if (lists.length <= 1) { alert("You can't delete your only list."); return }
     if (!confirm(`Delete "${activeList.name}" and all its items?`)) return
-    await deleteList(activeList.id)
-    const remaining = await refreshLists()
-    setActiveList((remaining.find(l => l.is_default) ?? remaining[0])?.id ?? null)
-    setShowListMenu(false)
+    try {
+      await deleteList(activeList.id)
+      const remaining = await refreshLists()
+      setActiveList((remaining.find(l => l.is_default) ?? remaining[0])?.id ?? null)
+      setShowListMenu(false)
+    } catch (err) {
+      console.error('[Lists] delete failed:', err)
+      alert("Couldn't delete the list — please try again.")
+    }
   }
 
   const groups = groupItems(items)

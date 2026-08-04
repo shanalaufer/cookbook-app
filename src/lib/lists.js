@@ -9,7 +9,9 @@ export async function getLists(userId) {
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: true })
-  if (error) console.error('[Lists] getLists failed (has the migration been run?):', error.message)
+  // Throw rather than return [] — a transient failure must not look like
+  // "user has no lists" (ensureDefaultList would then create a duplicate).
+  if (error) throw error
   return data ?? []
 }
 
@@ -17,11 +19,12 @@ export async function getLists(userId) {
 export async function ensureDefaultList(userId) {
   const lists = await getLists(userId)
   if (lists.length) return lists.find(l => l.is_default) ?? lists[0]
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('shopping_lists')
     .insert({ user_id: userId, name: 'My List', is_default: true })
     .select()
     .single()
+  if (error) throw error
   return data
 }
 
@@ -46,14 +49,16 @@ export async function renameList(listId, name) {
 // Creates a new list and copies the source list's items into it (unchecked).
 export async function duplicateList(userId, sourceListId, name) {
   const list = await createList(userId, name)
-  const { data: items } = await supabase
+  const { data: items, error: selectError } = await supabase
     .from('shopping_list')
     .select('ingredient,amount,category,recipe_name')
     .eq('list_id', sourceListId)
+  if (selectError) throw selectError
   if (items?.length) {
-    await supabase.from('shopping_list').insert(
+    const { error: insertError } = await supabase.from('shopping_list').insert(
       items.map(it => ({ ...it, user_id: userId, list_id: list.id, checked: false }))
     )
+    if (insertError) throw insertError
   }
   return list
 }

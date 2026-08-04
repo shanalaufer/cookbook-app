@@ -1,12 +1,15 @@
 import { supabase } from './supabase'
 import { categorizeIngredients } from './ai'
 import { normalizeCategory } from './categories'
+import { ingredientKey } from './quantity'
 
 // Per-user category assignment that layers remembered overrides on top of the AI
 // categorizer: overrides win, and only the still-unknown names are sent to the AI
 // (cheaper, and it respects the user's past corrections).
 
-const key = name => name.toLowerCase().trim()
+// One shared normalization for both storing and looking up overrides —
+// "tomatoes", "Tomato, diced", and "2 ripe tomatoes" must all hit the same row.
+const key = name => ingredientKey(name)
 
 export async function getCategoryOverrides(userId, names) {
   const lowered = [...new Set(names.map(key))]

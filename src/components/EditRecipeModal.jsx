@@ -64,10 +64,21 @@ export default function EditRecipeModal({ recipe, onClose, onSaved }) {
     sessionUploadsRef.current = []
   }
 
-  // Cancel: discard every photo uploaded this session; original is untouched
-  async function handleCancel() {
-    await cleanupSessionUploads(null)
+  const dirty =
+    title !== recipe.title ||
+    description !== (recipe.description ?? '') ||
+    instructions !== (recipe.instructions ?? '') ||
+    sourceImage !== (recipe.source_image ?? null) ||
+    JSON.stringify(ingredients) !== JSON.stringify(recipe.ingredients ?? [])
+
+  // Cancel: confirm if there are unsaved edits, close immediately, then discard
+  // session photo uploads in the background (no network wait before dismissal).
+  function handleCancel() {
+    if (dirty && !confirm('Discard your changes?')) return
     onClose()
+    cleanupSessionUploads(null).catch(err =>
+      console.error('[Edit] photo cleanup failed:', err)
+    )
   }
 
   async function handleSave() {

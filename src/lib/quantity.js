@@ -39,11 +39,12 @@ const PLURALIZE_UNITS = new Set([
 ])
 
 function parseNumber(str) {
-  let s = str.trim()
-  for (const [g, v] of Object.entries(UNICODE_FRACTIONS)) {
-    if (s.includes(g)) s = s.replace(g, (s.match(/\d\s*$/) ? ' ' : '') + v)
-  }
-  s = s.trim()
+  const s = str.trim()
+  // Unicode fraction, optionally with a leading whole number: "½", "1½", "1 ½"
+  const uni = s.match(/^(\d+)?\s*([¼½¾⅓⅔⅛⅜⅝⅞])$/)
+  if (uni) return Number(uni[1] ?? 0) + UNICODE_FRACTIONS[uni[2]]
+  // Any other glyph placement is ambiguous — don't risk merging
+  if (/[¼½¾⅓⅔⅛⅜⅝⅞]/.test(s)) return null
   // mixed number "1 1/2"
   const mixed = s.match(/^(\d+)\s+(\d+)\/(\d+)$/)
   if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3])

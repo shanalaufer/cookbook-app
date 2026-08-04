@@ -12,6 +12,7 @@ export default function Settings() {
 
   // Sync textarea when preferences finish loading from Supabase
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional one-shot sync from async-loaded preferences
     setRestrictions(preferences.dietary_restrictions ?? '')
   }, [preferences.dietary_restrictions])
 
@@ -31,7 +32,9 @@ export default function Settings() {
   }
 
   async function handleSignOut() {
-    await signOut()
+    // Navigate even if signOut errors (e.g. session already expired) — the
+    // auth listener clears local state either way.
+    try { await signOut() } catch (err) { console.error('[Settings] sign out failed:', err) }
     navigate('/')
   }
 

@@ -280,19 +280,23 @@ async function executeActions(rawReply, userId, activeListId) {
         if (action.list) listsChanged = true   // a named list may have just been created
         collect(await insertShoppingItems(userId, listId, action.items))
       } else if (action.type === 'remove_shopping') {
-        // Fetch then match by normalized key so "avocados" removes "avocado, diced"
+        // Fetch then match by normalized key so "avocados" removes "avocado, diced".
+        // No resolvable list (e.g. lists context not loaded yet) → do nothing
+        // rather than delete matching items from EVERY list.
         const listId = await resolveListByName(userId, action.list, { fallbackListId: activeListId })
-        let q = supabase.from('shopping_list').select('id,ingredient').eq('user_id', userId)
-        if (listId) q = q.eq('list_id', listId)
-        const { data: rows } = await q
-        for (const entry of action.items ?? []) {
-          const name = (typeof entry === 'string' ? entry : entry?.ingredient)?.trim()
-          if (!name) continue
-          const target = ingredientKey(name)
-          const ids = (rows ?? []).filter(r => ingredientKey(r.ingredient) === target).map(r => r.id)
-          if (!ids.length) continue
-          const { error } = await supabase.from('shopping_list').delete().in('id', ids)
-          if (error) console.error('[Action] shopping list delete failed:', error)
+        if (listId) {
+          const { data: rows } = await supabase
+            .from('shopping_list').select('id,ingredient')
+            .eq('user_id', userId).eq('list_id', listId)
+          for (const entry of action.items ?? []) {
+            const name = (typeof entry === 'string' ? entry : entry?.ingredient)?.trim()
+            if (!name) continue
+            const target = ingredientKey(name)
+            const ids = (rows ?? []).filter(r => ingredientKey(r.ingredient) === target).map(r => r.id)
+            if (!ids.length) continue
+            const { error } = await supabase.from('shopping_list').delete().in('id', ids)
+            if (error) console.error('[Action] shopping list delete failed:', error)
+          }
         }
       } else if (action.type === 'create_list') {
         const listId = await resolveListByName(userId, action.name, { create: true })
@@ -329,8 +333,9 @@ async function executeActions(rawReply, userId, activeListId) {
             const { error } = await supabase.from('shopping_list').update({ category }).in('id', ids)
             if (error) console.error('[Action] set_category failed:', error)
           }
-          // Remember even if no row matched right now — future adds will use it
-          await rememberCategory(userId, target, category)
+          // Remember even if no row matched right now — future adds will use it.
+          // Pass the raw name: rememberCategory normalizes with ingredientKey itself.
+          await rememberCategory(userId, name, category)
         }
       } else if (action.type === 'dedupe_shopping') {
         // Deterministically drop duplicate rows on a list — keep the earliest of
@@ -401,6 +406,7 @@ export default function AIChat() {
     setHistoryLoaded(true)
   }, [user.id])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch; setState runs after the await, not synchronously
   useEffect(() => { loadHistory() }, [loadHistory])
 
   useEffect(() => {
@@ -520,7 +526,7 @@ export default function AIChat() {
 
       // Execute any embedded actions (meal planner / shopping list writes)
       const { listsChanged, added, skipped, failed } = await executeActions(rawReply, user.id, activeListId)
-      if (listsChanged) refreshLists()
+      if (listsChanged) refreshLists().catch(err => console.error('[Chat] list refresh failed:', err))
 
       // Strip action tags before storing — text around them already confirms what happened.
       // Never store an empty reply: an empty model turn gets filtered on reload, which
@@ -572,12 +578,22 @@ export default function AIChat() {
       instructions: recipe.instructions ?? '',
       source_type: 'ai',
     })
-    if (!error) setSavedTitles(prev => new Set([...prev, recipe.title]))
+    if (error) {
+      console.error('[Chat] failed to save recipe:', error)
+      alert("Couldn't save the recipe — please try again.")
+      return
+    }
+    setSavedTitles(prev => new Set([...prev, recipe.title]))
   }
 
   async function clearHistory() {
     if (!confirm('Clear all chat history?')) return
-    await supabase.from('chat_history').delete().eq('user_id', user.id)
+    const { error } = await supabase.from('chat_history').delete().eq('user_id', user.id)
+    if (error) {
+      console.error('[Chat] failed to clear history:', error)
+      alert("Couldn't clear history — please try again.")
+      return
+    }
     setMessages([])
   }
 

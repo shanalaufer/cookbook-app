@@ -79,4 +79,5 @@ export function ShoppingListsProvider({ children }) {
   )
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- co-locating the hook with its provider is worth losing fast-refresh here
 export const useShoppingLists = () => useContext(ShoppingListsContext)

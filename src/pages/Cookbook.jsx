@@ -15,23 +15,34 @@ export default function Cookbook() {
   const [editing, setEditing] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
   const [search, setSearch] = useState('')
+  const [loadError, setLoadError] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('recipes')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
-    setRecipes(data ?? [])
+    if (error) {
+      // Keep prior recipes on screen — a failed load must not masquerade as
+      // an empty cookbook.
+      console.error('[Cookbook] load failed:', error)
+      setLoadError(true)
+    } else {
+      setLoadError(false)
+      setRecipes(data ?? [])
+    }
     setLoading(false)
   }, [user.id])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch; setState runs after the await, not synchronously
   useEffect(() => { load() }, [load])
 
   async function handleDelete(recipe) {
     if (!confirm(`Delete "${recipe.title}"?`)) return
-    await supabase.from('recipes').delete().eq('id', recipe.id)
+    const { error } = await supabase.from('recipes').delete().eq('id', recipe.id)
+    if (error) { alert('Failed to delete: ' + error.message); return }
     setSelected(null)
     load()
   }
@@ -56,12 +67,16 @@ export default function Cookbook() {
 
   async function handlePhotoDelete(recipe) {
     if (!confirm('Remove this photo?')) return
-    await deleteRecipePhotoByUrl(recipe.source_image)
+    // DB first, storage second: if the row update fails we haven't destroyed
+    // the file, so the recipe never points at a deleted image.
     const { error } = await supabase
       .from('recipes')
       .update({ source_image: null })
       .eq('id', recipe.id)
     if (error) { alert('Failed to remove photo: ' + error.message); return }
+    deleteRecipePhotoByUrl(recipe.source_image).catch(err =>
+      console.error('[Cookbook] storage cleanup failed:', err)
+    )
     const updated = { ...recipe, source_image: null }
     setSelected(updated)
     setRecipes(prev => prev.map(r => r.id === recipe.id ? updated : r))
@@ -97,11 +112,20 @@ export default function Cookbook() {
         </div>
       )}
 
-      {!loading && recipes.length === 0 && (
+      {!loading && loadError && (
+        <div className="empty-state">
+          <div className="empty-icon">⚠️</div>
+          <p>Couldn't load your recipes</p>
+          <p className="hint">Check your connection, then try again.</p>
+          <button className="btn-secondary" onClick={load} style={{ marginTop: 12 }}>Retry</button>
+        </div>
+      )}
+
+      {!loading && !loadError && recipes.length === 0 && (
         <div className="empty-state">
           <div className="empty-icon">📚</div>
           <p>Your cookbook is empty</p>
-          <p className="hint">Save recipes from Discover, or tap + to add one</p>
+          <p className="hint">Tap + to add a recipe, or save one from the AI chat</p>
         </div>
       )}
 

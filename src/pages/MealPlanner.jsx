@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -42,15 +42,22 @@ export default function MealPlanner() {
 
   const days = getWeekDates(weekOffset)
 
+  // Monotonic counter so paging weeks quickly can't leave a slower, older
+  // week's response displayed under the current week's dates.
+  const loadSeq = useRef(0)
+
   const load = useCallback(async () => {
     const start = toDateStr(days[0])
     const end = toDateStr(days[6])
-    const { data } = await supabase
+    const seq = ++loadSeq.current
+    const { data, error } = await supabase
       .from('meal_plan')
       .select('*, recipes(title)')
       .eq('user_id', user.id)
       .gte('date', start)
       .lte('date', end)
+    if (seq !== loadSeq.current) return   // superseded by a newer load
+    if (error) { console.error('[Planner] load failed:', error); return }
     const map = {}
     for (const row of data ?? []) {
       map[`${row.date}:${row.meal_slot}`] = row
@@ -58,6 +65,7 @@ export default function MealPlanner() {
     setPlans(map)
   }, [user.id, weekOffset]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- async data fetch; setState runs after the await, not synchronously
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
@@ -74,7 +82,7 @@ export default function MealPlanner() {
   }
 
   async function saveMeal() {
-    const { date, slot, key, existingId } = editing
+    const { date, slot, existingId } = editing
     const payload = {
       user_id: user.id,
       date,
@@ -82,10 +90,13 @@ export default function MealPlanner() {
       recipe_id: editRecipeId || null,
       custom_text: !editRecipeId ? editText || null : null,
     }
-    if (existingId) {
-      await supabase.from('meal_plan').update(payload).eq('id', existingId)
-    } else {
-      await supabase.from('meal_plan').insert(payload)
+    const { error } = existingId
+      ? await supabase.from('meal_plan').update(payload).eq('id', existingId)
+      : await supabase.from('meal_plan').insert(payload)
+    if (error) {
+      console.error('[Planner] save failed:', error)
+      alert("Couldn't save that meal — please try again.")
+      return
     }
     setEditing(null)
     load()
@@ -94,7 +105,12 @@ export default function MealPlanner() {
   async function clearMeal() {
     const { key, existingId } = editing
     if (existingId) {
-      await supabase.from('meal_plan').delete().eq('id', existingId)
+      const { error } = await supabase.from('meal_plan').delete().eq('id', existingId)
+      if (error) {
+        console.error('[Planner] clear failed:', error)
+        alert("Couldn't clear that meal — please try again.")
+        return
+      }
     }
     setPlans(prev => { const next = { ...prev }; delete next[key]; return next })
     setEditing(null)
