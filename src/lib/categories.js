@@ -1,5 +1,5 @@
 // Single source of truth for shopping categories. Imported by ShoppingList,
-// IngredientChecklist, AIChat, and the Groq categorizer so they never drift.
+// IngredientChecklist, AIChat, and the AI categorizer so they never drift.
 
 export const CATEGORY_ORDER = [
   'Protein',

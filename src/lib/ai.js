@@ -1,18 +1,8 @@
-import OpenAI from 'openai'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
-// ─── Groq — primary AI for all text tasks ────────────────
-const GROQ_MODEL = 'llama-3.3-70b-versatile'
-
-function getGroqClient() {
-  return new OpenAI({
-    baseURL: 'https://api.groq.com/openai/v1',
-    apiKey: import.meta.env.VITE_GROQ_API_KEY,
-    dangerouslyAllowBrowser: true,
-  })
-}
-
-// ─── Gemini — image vision + chat ────────────────────────
+// ─── Gemini — all AI tasks ───────────────────────────────
+// (Groq was dropped: its edge network blocks some residential/VPN IPs with
+// "Access denied", which broke text/URL extraction entirely.)
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
 function getGeminiModel(systemInstruction) {
@@ -21,10 +11,6 @@ function getGeminiModel(systemInstruction) {
 }
 
 // ─── Shared helpers ───────────────────────────────────────
-
-function responseText(completion) {
-  return completion.choices[0].message.content
-}
 
 function dietaryNote(restrictions) {
   if (!restrictions?.trim()) return ''
@@ -62,7 +48,7 @@ function is429(err) {
   )
 }
 
-async function timedCall(label, tokenStrings, fn, provider = 'Groq') {
+async function timedCall(label, tokenStrings, fn, provider = 'Gemini') {
   const tokens = approxTokens(...tokenStrings)
   const start = performance.now()
   try {
@@ -78,15 +64,14 @@ async function timedCall(label, tokenStrings, fn, provider = 'Groq') {
   }
 }
 
-async function groqChat(messages, label) {
-  const client = getGroqClient()
-  const tokenStrings = messages.map(m =>
-    typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+// One-shot text task: system instruction + prompt → response text
+async function geminiText(system, prompt, label) {
+  const model = getGeminiModel(system)
+  const result = await timedCall(label, [system, prompt], () =>
+    model.generateContent(prompt),
+    'Gemini'
   )
-  const completion = await timedCall(label, tokenStrings, () =>
-    client.chat.completions.create({ model: GROQ_MODEL, messages })
-  )
-  return responseText(completion)
+  return result.response.text()
 }
 
 // ─── Recipe generation (Gemini) ───────────────────────────
@@ -102,15 +87,12 @@ export async function generateRecipeIdeas(query, dietaryRestrictions) {
   return parseJSON(result.response.text(), true).map(cleanRecipe)
 }
 
-// ─── Recipe extraction — text + URL (Groq) ───────────────
+// ─── Recipe extraction — text + URL (Gemini) ─────────────
 
 export async function extractRecipeFromText(rawText, dietaryRestrictions) {
   const system = `You extract and structure recipes from text. Reply with raw JSON only — no markdown.${dietaryNote(dietaryRestrictions)}`
   const prompt = `Extract and structure this recipe:\n{"title":"","description":"Brief appealing description","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}\n\nText:\n${rawText}`
-  const raw = await groqChat([
-    { role: 'system', content: system },
-    { role: 'user',   content: prompt },
-  ], 'extract recipe from text')
+  const raw = await geminiText(system, prompt, 'extract recipe from text')
   return cleanRecipe(parseJSON(raw))
 }
 
@@ -118,10 +100,7 @@ export async function extractRecipeFromUrl(url, pageText, dietaryRestrictions) {
   const system = `You extract recipes from webpage text. Reply with raw JSON only — no markdown.${dietaryNote(dietaryRestrictions)}`
   const truncated = pageText.slice(0, 8000)
   const prompt = `Extract the recipe from this page:\n{"title":"","description":"Brief appealing description","ingredients":["amount item"],"instructions":"1. Step\\n2. Step"}\n\nURL: ${url}\nPage text:\n${truncated}`
-  const raw = await groqChat([
-    { role: 'system', content: system },
-    { role: 'user',   content: prompt },
-  ], 'extract recipe from URL')
+  const raw = await geminiText(system, prompt, 'extract recipe from URL')
   return cleanRecipe(parseJSON(raw))
 }
 
@@ -161,7 +140,7 @@ export async function extractRecipeFromImage(base64Data, mimeType, dietaryRestri
   return cleanRecipe(parseJSON(result.response.text()))
 }
 
-// ─── Ingredient categorization (Groq) ────────────────────
+// ─── Ingredient categorization (Gemini) ──────────────────
 
 export async function categorizeIngredients(ingredients) {
   const system = `You are a grocery categorization expert. Assign every ingredient to exactly one of these categories:
@@ -178,18 +157,9 @@ export async function categorizeIngredients(ingredients) {
 - Supplements: vitamins, protein powder, collagen, supplements, electrolyte powders
 - Other: non-food items, cleaning supplies, or anything that truly does not fit above`
   const prompt = `Categorize every ingredient. Return ONLY a raw JSON object — no explanation, no markdown:\n{"ingredient name": "Category"}\n\nIngredients: ${JSON.stringify(ingredients)}`
-  const client = getGroqClient()
-  const completion = await timedCall('ingredient categorization', [system, prompt], () =>
-    client.chat.completions.create({
-      model: GROQ_MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user',   content: prompt },
-      ],
-    })
-  )
+  const raw = await geminiText(system, prompt, 'ingredient categorization')
   try {
-    return parseJSON(responseText(completion))
+    return parseJSON(raw)
   } catch {
     return {}
   }
