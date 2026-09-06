@@ -30,6 +30,29 @@ html, body, #root {
   font-size: 16px;
 }
 
+/* ─── Native-app feel ─────────────────────────────────
+   Suppresses the browser tells that make an installed PWA still read as a
+   webpage: the gray tap flash, the long-press "Copy / Save Image" callout,
+   and accidental text selection on buttons/cards/labels. Actual content
+   (recipe text, chat messages, form inputs) is left selectable on purpose. */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, a, select,
+.nav-tab, .recipe-card, .chat-recipe-card, .shopping-item, .meal-slot,
+.checklist-item, .day-shopping-btn, .category-title, .page-header,
+.settings-label, .edit-label, .week-nav h2, .day-header {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+img {
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
 /* ─── App shell ──────────────────────────────────────── */
 .app-container {
   display: flex;
@@ -185,7 +208,7 @@ html, body, #root {
 }
 .search-bar input, .chat-input-bar input {
   flex: 1; border: none; background: transparent;
-  font-size: 15px; color: var(--text); outline: none;
+  font-size: 16px; color: var(--text); outline: none;
 }
 .search-bar input::placeholder, .chat-input-bar input::placeholder { color: var(--text-muted); }
 .search-bar button, .chat-input-bar button {
@@ -321,7 +344,8 @@ html, body, #root {
 .input-field {
   width: 100%; padding: 13px 14px;
   border: 1.5px solid var(--border); border-radius: var(--radius);
-  font-size: 15px; background: var(--card); color: var(--text);
+  /* 16px minimum stops iOS from zooming the viewport in on focus */
+  font-size: 16px; background: var(--card); color: var(--text);
   outline: none; transition: border-color .15s; font-family: inherit;
 }
 .input-field:focus { border-color: var(--primary); }
@@ -336,7 +360,7 @@ select.input-field { cursor: pointer; }
 .manual-add-form input {
   flex: 1; padding: 10px 14px;
   border: 1.5px solid var(--border); border-radius: var(--radius);
-  background: var(--card); font-size: 14px; color: var(--text);
+  background: var(--card); font-size: 16px; color: var(--text);
   outline: none; font-family: inherit;
 }
 .manual-add-form input:focus { border-color: var(--primary); }
@@ -351,7 +375,7 @@ select.input-field { cursor: pointer; }
 .list-switcher-select {
   flex: 1; padding: 10px 14px;
   border: 1.5px solid var(--border); border-radius: var(--radius);
-  background: var(--card); font-size: 14px; font-weight: 600; color: var(--text);
+  background: var(--card); font-size: 16px; font-weight: 600; color: var(--text);
   outline: none; font-family: inherit; cursor: pointer;
 }
 .list-switcher-select:focus { border-color: var(--primary); }
@@ -634,10 +658,10 @@ select.input-field { cursor: pointer; }
 
 /* ─── Manual category select ─────────────────────────── */
 .manual-category-select {
-  padding: 10px 8px; flex-shrink: 0; max-width: 108px;
+  padding: 10px 8px; flex-shrink: 0; max-width: 128px;
   border: 1.5px solid var(--border); border-radius: var(--radius);
   background: var(--card); color: var(--text);
-  font-size: 13px; cursor: pointer; outline: none;
+  font-size: 16px; cursor: pointer; outline: none;
   font-family: inherit;
 }
 .manual-category-select:focus { border-color: var(--primary); }
